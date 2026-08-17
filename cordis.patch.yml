@@ -1,0 +1,6 @@
+# dsh-billing bundle: mounts the billing host plugin. The same package's
+# `dsh.client` declaration registers the browser half (header action +
+# settings page) into the web plugin roster automatically.
+- insert:
+    - id: billing
+      name: dsh-billing

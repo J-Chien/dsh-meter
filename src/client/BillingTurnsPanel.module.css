@@ -1,0 +1,444 @@
+/* BillingTurnsPanel: the per-turn consumption detail panel (dimension +
+   grouping switches, axis-labeled chart, detail table). CSS-drawn, no chart
+   library. Token bucket colors use the defined semantic tokens only — the
+   previously-used `state-business-secondary` alias does not exist in the
+   design system and rendered blank. */
+
+.mask {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--dsw-alias-bg-mask-1);
+  backdrop-filter: var(--dsw-mask-blur);
+}
+
+.panel {
+  position: fixed;
+  z-index: 201;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-sizing: border-box;
+  max-height: 70vh;
+  padding: 14px 16px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv3);
+  color: var(--dsw-alias-label-primary);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+}
+
+.title {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.headActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.refresh {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.refresh:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.close:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.empty {
+  padding: 24px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  text-align: center;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sectionTitle {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.switches {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dimSwitch {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.dimBtn {
+  padding: 2px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.dimBtnActive {
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Chart + value axis: the axis column is fixed-width on the left, the chart
+   flexes beside it. */
+.chartWrap {
+  min-width: 0;
+}
+
+.chartGrid {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  height: 150px;
+}
+
+.axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex: none;
+  width: 58px;
+  padding: 2px 0 0;
+  box-sizing: border-box;
+}
+
+.axisTick {
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  line-height: 11px;
+  white-space: nowrap;
+}
+
+/* Cost bar chart. */
+.barChart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.barCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 0 18px;
+  min-width: 0;
+  height: 100%;
+  gap: 2px;
+}
+
+.bar {
+  width: 100%;
+  max-width: 22px;
+  border-radius: 3px 3px 0 0;
+  background: var(--dsw-static-deepseek-400);
+}
+
+.barPeak {
+  background: var(--dsw-static-amber-400);
+}
+
+.barUnpriced {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent 0 3px,
+    var(--dsw-alias-border-l2) 3px 5px
+  );
+}
+
+.barLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-mono);
+  font-size: 9px;
+  line-height: 12px;
+  white-space: nowrap;
+}
+
+/* Token stacked chart: uncached input / cache read / cache write / output.
+   Colors are the defined state tokens (success 3-step for input layers,
+   warn for cache write, business for output) — distinct in both themes. */
+.stackChart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.stackCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 0 18px;
+  min-width: 0;
+  height: 100%;
+  gap: 2px;
+}
+
+.stackWrap {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 100%;
+  max-width: 22px;
+  height: 100%;
+  gap: 1px;
+}
+
+/* Token stacked chart: uncached input / cache read / cache write / output.
+   The three input buckets are a blue lightness gradient (readable on both the
+   light and dark panel), output is a distinct warm hue so the four stacked
+   segments never blur together. Colors are static (panel bg differs between
+   themes) and chosen for contrast on both. */
+.stackUncached {
+  width: 100%;
+  border-radius: 3px 3px 0 0;
+  background: var(--dsw-static-deepseek-400);
+}
+
+.stackCacheRead {
+  width: 100%;
+  background: var(--dsw-static-deepseek-200);
+}
+
+.stackCacheWrite {
+  width: 100%;
+  background: var(--dsw-static-deepseek-500);
+}
+
+.stackOutput {
+  width: 100%;
+  background: var(--dsw-static-amber-400);
+}
+
+.scrollX {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.legendSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.legendOffPeak {
+  background: var(--dsw-static-deepseek-400);
+}
+
+.legendPeak {
+  background: var(--dsw-static-amber-400);
+}
+
+.legendUnpriced {
+  background: repeating-linear-gradient(45deg, transparent 0 2px, var(--dsw-alias-border-l2) 2px 3px);
+}
+
+.legendUncached {
+  background: var(--dsw-static-deepseek-400);
+}
+
+.legendCacheRead {
+  background: var(--dsw-static-deepseek-200);
+}
+
+.legendCacheWrite {
+  background: var(--dsw-static-deepseek-500);
+}
+
+.legendOutput {
+  background: var(--dsw-static-amber-400);
+}
+
+/* Disjoint-bucket explanation under the token chart. */
+.bucketNote {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+/* Detail table. */
+.tableWrap {
+  min-width: 0;
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  padding: 6px 8px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-tertiary);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 5px 8px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+}
+
+.tdNum,
+.tdTurn {
+  font-family: var(--dsw-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tdNum {
+  text-align: right;
+}
+
+.tdPeriod {
+  font-size: 10px;
+}
+
+.tdPeriodPeak {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/* Collapsible turn-group header rows in the "按请求" view. */
+.groupHead {
+  cursor: pointer;
+}
+
+.groupHead:hover td {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.groupChevron {
+  display: inline-block;
+  margin-right: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  transition: transform 150ms ease;
+  transform: rotate(0deg);
+}
+
+.groupChevronOpen {
+  transform: rotate(90deg);
+}
+
+.groupCount {
+  margin-left: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+}
+
+.unpricedTag {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: var(--dsw-alias-state-warn-label);
+  background: var(--dsw-alias-state-warn-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}

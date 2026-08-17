@@ -1,0 +1,10 @@
+.label {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.hint {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 0.85em;
+}

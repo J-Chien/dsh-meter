@@ -1,0 +1,45 @@
+# ---- 依赖 ----
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# ---- 构建产物（npm run build 会完整重建 lib/）----
+lib/
+dist/
+*.tsbuildinfo
+
+# ---- 打包产物 ----
+*.tgz
+
+# ---- macOS ----
+.DS_Store
+**/.DS_Store
+
+# ---- 日志 / 临时文件 ----
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+*.tmp
+*.temp
+.cache/
+
+# ---- 编辑器 / IDE ----
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- 环境变量 / 密钥（千万别提交）----
+.env
+.env.*
+!.env.example
+
+# ---- 测试 / 覆盖率 ----
+coverage/
+.vitest/

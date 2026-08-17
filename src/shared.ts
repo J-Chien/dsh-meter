@@ -1,0 +1,276 @@
+/**
+ * Wire shapes shared (via local copy) by the host fold and the client UI.
+ * Plain JSON, deliberately independent of @deepseek-ai packages so both
+ * halves can import it without crossing the bundle purity gate.
+ */
+
+/**
+ * One input/output-length price tier (e.g. z.ai GLM tiered billing).
+ * A request's TOTAL input length (uncached + cache read + cache write) and
+ * output length pick the FIRST tier whose ranges contain them; a request
+ * matching no tier falls back to the owning block's flat price. All lengths
+ * are raw token counts; a bound of 32000 means 32K tokens.
+ *
+ * The tier RANGES live only on the model's base tier list (`ModelPrice.tiers`).
+ * A peak period's `tiers` entries are the SAME length, aligned by index, and
+ * carry only prices (ranges ignored) — the period reuses the base ranges.
+ */
+export interface PriceTier {
+  /** Inclusive input lower bound; absent = 0. */
+  inputMin?: number
+  /** Exclusive input upper bound; absent = unbounded. */
+  inputMax?: number
+  /** Inclusive output lower bound; absent = 0. */
+  outputMin?: number
+  /** Exclusive output upper bound; absent = unbounded. */
+  outputMax?: number
+  /** Prices while this tier applies, per million tokens. */
+  input: number
+  output: number
+  cacheInput: number
+  /**
+   * Per-M price of writing a cache entry; absent = 0 (not billed separately).
+   * A single scalar because the durable log currently carries only the total
+   * cache-write token count — providers that split writes by TTL (e.g.
+   * Anthropic's `cache_creation.ephemeral_5m/1h_input_tokens`) are not yet
+   * surfaced, so per-TTL prices cannot be matched to usage. When that split
+   * flows, extend this to a `Record<ttl, number>` (see PRD §8).
+   */
+  cacheWrite?: number
+}
+
+/** One configured peak/off-peak price period for a model. */
+export interface PeakPeriod {
+  /** Local hour the window starts (0-23). */
+  startHour: number
+  /** Local hour the window ends (1-24; a lower end than start = overnight). */
+  endHour: number
+  /** Day-of-week mask (0=Sunday … 6=Saturday); absent = every day. */
+  days?: number[]
+  /** Prices while the period is active, per million tokens. */
+  input: number
+  output: number
+  cacheInput: number
+  /** Per-M price of writing a cache entry; absent = 0 (not billed separately). */
+  cacheWrite?: number
+  /**
+   * The period's per-tier peak prices, aligned BY INDEX with the model's
+   * base `tiers` (same length; ranges come from the base list). A new peak
+   * period is created as a copy of the base tiers' structure with the
+   * period's flat prices pre-filled; while the period is active, matching
+   * tiers use these prices and the flat price is the fallback.
+   */
+  tiers?: PriceTier[]
+}
+
+/** One model's price row. All prices are per million tokens. */
+export interface ModelPrice {
+  provider: string
+  model: string
+  reasoningEffort?: string
+  /** Off-peak (default) per-M prices. Doubles as the default when no tier matches. */
+  input: number
+  output: number
+  cacheInput: number
+  /** Per-M cache-write price; absent = 0 (not billed separately). */
+  cacheWrite?: number
+  /** Optional peak/off-peak windows; absent = always the default price. */
+  periods?: PeakPeriod[]
+  /** Optional length-based price tiers; absent = no tiering. */
+  tiers?: PriceTier[]
+}
+
+/** Per-provider currency selection. */
+export interface ProviderCurrency {
+  currency: 'CNY' | 'USD'
+  currencySymbol: string
+}
+
+/** The resolved price configuration (what the settings page edits). */
+export interface PriceTable {
+  /** Currency per provider (providers may bill in different currencies). */
+  providers: Record<string, ProviderCurrency>
+  models: ModelPrice[]
+}
+
+/** Whether a wall-clock instant falls inside a peak window. Shared by the
+ *  host fold and the client "currently in peak" hint so window semantics
+ *  stay single-source. */
+export function inPeakWindow(period: PeakPeriod, timeMs: number): boolean {
+  const date = new Date(timeMs)
+  const day = date.getDay()
+  const hour = date.getHours()
+  // Empty (or absent) days = every day; a non-empty mask restricts.
+  if (period.days !== undefined && period.days.length > 0 && !period.days.includes(day)) return false
+  if (period.startHour < period.endHour) {
+    if (hour < period.startHour || hour >= period.endHour) return false
+  } else {
+    // Overnight window: e.g. 22 → 6 means [22,24) ∪ [0,6).
+    if (hour < period.startHour && hour >= period.endHour) return false
+  }
+  return true
+}
+
+/** One priced request's cost breakdown, folded from one `assistant/message`.
+ *  Drives the per-turn consumption chart/detail. All token counts are the
+ *  durable usage values; cost is in PRICE_PRECISION units. */
+export interface TurnCost {
+  /** Conversation turn (1-based, from the event). */
+  turn: number
+  /** Step within the turn. */
+  step: number
+  /** Request wall-clock time (epoch ms) — the same value peak/off-peak uses. */
+  time: number
+  /** Total input this request (uncached + cache read + cache write). */
+  inputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  outputTokens: number
+  /** This request's cache hit rate: cacheRead / (uncached + cacheRead). */
+  cacheHitRate: number
+  /** This request's cost in PRICE_PRECISION units; 0 when unpriced. */
+  cost: number
+  currency: string
+  period: 'peak' | 'off-peak'
+  /** Whether the request's model had a registered price row. */
+  priced: boolean
+}
+
+/** Settings-page model capability from the catalog route (best-effort). */
+export interface ModelCapability {
+  /** Adapter-disclosed context window; absent = unknown. */
+  contextWindow?: number
+  /** Deployment-configured single-request output cap; absent = not configured. */
+  maxTokens?: number
+}
+
+/** A turn-level aggregate of its per-request rows (same TurnCost fields,
+ *  summed/merged across the turn's steps). Drives the turn-grouped chart and
+ *  table; the raw per-request `turns` stay available for the request view. */
+export interface TurnSummary extends TurnCost {
+  /** How many requests (steps) merged into this turn. */
+  requests: number
+}
+
+/** Group per-request rows by turn (and currency, so a multi-currency turn
+ *  never mixes values) into turn-level summaries, in log order. Merged rows
+ *  sum their token buckets and cost, keep the last request's time/period, and
+ *  re-derive the cache hit rate from the summed buckets; a turn is priced
+ *  only when every request in it is priced. */
+export function aggregateTurns(turns: readonly TurnCost[]): TurnSummary[] {
+  const byTurn = new Map<string, TurnSummary>()
+  for (const t of turns) {
+    const key = `${t.turn}:${t.currency}`
+    const prev = byTurn.get(key)
+    if (prev === undefined) {
+      byTurn.set(key, { ...t, requests: 1 })
+      continue
+    }
+    prev.requests += 1
+    prev.time = t.time
+    prev.inputTokens += t.inputTokens
+    prev.cacheReadTokens += t.cacheReadTokens
+    prev.cacheWriteTokens += t.cacheWriteTokens
+    prev.outputTokens += t.outputTokens
+    prev.cost += t.cost
+    prev.priced = prev.priced && t.priced
+    prev.period = t.period
+    const uncached = prev.inputTokens - prev.cacheReadTokens - prev.cacheWriteTokens
+    prev.cacheHitRate = uncached + prev.cacheReadTokens > 0
+      ? prev.cacheReadTokens / (uncached + prev.cacheReadTokens)
+      : 0
+  }
+  return [...byTurn.values()]
+}
+
+/** Max per-request rows the projection frame carries (bounded for size). */
+export const RECENT_TURNS_CAP = 50
+/** Context-usage ratio above which the card warns "near limit". */
+export const CONTEXT_WARN_THRESHOLD = 0.85
+/** Single-request input vs window ratio that triggers a per-request hint. */
+export const SINGLE_TURN_WARN_RATIO = 0.3
+
+/** Per-session billing stats folded from the log. */
+export interface SessionBillingStats {
+  uncachedInputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  outputTokens: number
+  /** Cache hit rate: cacheRead / (uncachedInput + cacheRead), 0..1. */
+  cacheHitRate: number
+  /** Number of priced requests (a price row exists for the model). */
+  requestCount: number
+  /** Number of requests whose model had no registered price. */
+  unpricedRequestCount: number
+  /** Whether any priced model configures peak periods (drives the split rows). */
+  hasPeakConfig: boolean
+  /**
+   * The most recent request's model config (provider/model + optional
+   * reasoning effort). Drives the card's model line and the "locate this
+   * model in settings" jump. Undefined until the first request/header event.
+   */
+  currentModel: { provider: string; model: string; reasoningEffort?: string } | undefined
+  /**
+   * "provider/model" keys of the models this session used that configure
+   * peak windows. The client pairs these with the price table (and a timer)
+   * to show a "currently in peak" tag in the header without host round-trips.
+   */
+  peakModels: string[]
+  /**
+   * Total cost in PRICE_PRECISION units, keyed by currency code. A session
+   * can touch several providers that bill in different currencies.
+   */
+  cost: Record<string, number>
+  /** Per-currency off-peak/peak split, in PRICE_PRECISION units. */
+  byPeriod: Record<string, { offPeak: number; peak: number }>
+  /** Per-request cost/token breakdown, in log order, bounded to the most
+   *  recent RECENT_TURNS_CAP entries. Full history rides the turns route. */
+  turns: TurnCost[]
+  /** Most recent request's total input (context-usage numerator; NOT
+   *  cumulative — cache hits would double-count across requests). */
+  lastRequestInputTokens?: number
+  /** Most recent request/context window (context-usage denominator);
+   *  cleared when the model switches to an unknown-capacity route. */
+  contextWindow?: number
+  /** Most recent request/header config.maxTokens (effective output cap). */
+  maxOutputTokens?: number
+}
+
+/**
+ * How many price units make one currency unit (100000 → 0.00001 resolution).
+ * Single source for both halves: a drift here misprices everything.
+ */
+export const PRICE_PRECISION = 100_000
+
+/** Convert price units to a display string with 2 decimal places. */
+export function formatPrice(priceUnits: number, symbol: string): string {
+  const value = priceUnits / PRICE_PRECISION
+  return `${symbol}${value.toFixed(2)}`
+}
+
+/**
+ * Zeroed stats (before any request). Frozen: the fold clones before
+ * mutating, so every session's initial cell may share this one object.
+ */
+export const EMPTY_STATS: SessionBillingStats = (() => {
+  const stats: SessionBillingStats = {
+    uncachedInputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    cacheHitRate: 0,
+    requestCount: 0,
+    unpricedRequestCount: 0,
+    hasPeakConfig: false,
+    peakModels: [],
+    currentModel: undefined,
+    cost: {},
+    byPeriod: {},
+    turns: [],
+  }
+  Object.freeze(stats.peakModels)
+  Object.freeze(stats.cost)
+  Object.freeze(stats.byPeriod)
+  Object.freeze(stats.turns)
+  return Object.freeze(stats)
+})()

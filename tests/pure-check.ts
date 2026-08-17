@@ -1,0 +1,452 @@
+import assert from 'node:assert/strict'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
+import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
+import { foldBilling, foldEvent, foldBillingBounded, EMPTY_STATS } from '../src/host/session-stats.ts'
+import { aggregateTurns } from '../src/shared.ts'
+import type { PriceTable } from '../src/shared.ts'
+
+// --- priceTokens ---
+assert.equal(priceTokens(1_000_000, cnyPerMillion(10.155)), 1_015_500, '1M @10.155/M = 10.155')
+assert.equal(priceTokens(0, 1_000), 0)
+assert.equal(priceTokens(500_000, cnyPerMillion(1)), 50_000, '0.5M @1/M = 0.5')
+assert.equal(formatPrice(priceTokens(1_000_000, cnyPerMillion(10.155)), '¥'), '¥10.15')
+assert.equal(formatPrice(priceTokens(1_000_000, cnyPerMillion(1)), '¥'), '¥1.00')
+
+// --- effectivePrice: default table ---
+const t = DEFAULT_TABLE
+assert.deepEqual(effectivePrice(t, 'wpsai', 'deepseek/deepseek-v4-flash', undefined, Date.parse('2026-08-17T12:00:00+08:00')), {
+  input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02), cacheWrite: 0, period: 'off-peak', found: true,
+})
+assert.deepEqual(effectivePrice(t, 'wpsai', 'unknown/model', undefined, Date.now()), { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', found: false })
+
+// --- inPeakWindow (overnight 22→06) ---
+const peak = { startHour: 22, endHour: 6, input: 1, output: 1, cacheInput: 1 }
+const at = (iso: string) => Date.parse(iso)
+assert.equal(inPeakWindow(peak, at('2026-08-17T23:00:00+08:00')), true, '23:00 in overnight window')
+assert.equal(inPeakWindow(peak, at('2026-08-17T05:00:00+08:00')), true, '05:00 in overnight window')
+assert.equal(inPeakWindow(peak, at('2026-08-17T12:00:00+08:00')), false, '12:00 outside')
+assert.equal(inPeakWindow(peak, at('2026-08-17T06:00:00+08:00')), false, '06:00 boundary excluded')
+
+// --- fold over a realistic log with a peak period ---
+const table: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'wpsai', model: 'deepseek/deepseek-v4-flash',
+    input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02),
+    periods: [{ startHour: 22, endHour: 6, input: cnyPerMillion(1.5), output: cnyPerMillion(3), cacheInput: cnyPerMillion(0.03) }],
+  }],
+}
+const hdr = (time: number): SessionEvent<'request/header'> => ({
+  type: 'request/header', seq: 0, time,
+  data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash' } }, reason: 'initial' },
+})
+// The fold reads only `usage`; the message payload just needs to satisfy the
+// AssistantMessage shape (branded MessageId cast, minimal model source).
+const assistantMessage = (provider: string, model: string) => ({
+  role: 'assistant' as const, content: [], id: 'm-1' as never,
+  source: { kind: 'model' as const, provider, model },
+})
+const msg = (seq: number, time: number, input: number, output: number, cacheRead: number): SessionEvent<'assistant/message'> => ({
+  type: 'assistant/message', seq, time,
+  data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead } },
+  surfaceOp: 'append',
+})
+
+const log: SessionEvent[] = [
+  hdr(at('2026-08-17T12:00:00+08:00')),
+  msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
+  msg(2, at('2026-08-17T23:00:00+08:00'), 80, 30, 20), // peak
+]
+
+const stats = foldBilling(log, table)
+assert.equal(stats.uncachedInputTokens, 180)
+assert.equal(stats.outputTokens, 80)
+assert.equal(stats.cacheReadTokens, 20)
+assert.equal(stats.requestCount, 2)
+assert.equal(stats.unpricedRequestCount, 0)
+assert.equal(stats.hasPeakConfig, true, 'peak period configured')
+assert.deepEqual(stats.peakModels, ['wpsai/deepseek/deepseek-v4-flash'], 'peak-configured model collected')
+assert.deepEqual(stats.currentModel, { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash' }, 'current model from last header')
+assert.equal(stats.cost['CNY'], priceTokens(100, cnyPerMillion(1)) + priceTokens(50, cnyPerMillion(2))
+  + priceTokens(80, cnyPerMillion(1.5)) + priceTokens(20, cnyPerMillion(0.03)) + priceTokens(30, cnyPerMillion(3)))
+assert.equal(stats.byPeriod['CNY']!.offPeak, priceTokens(100, cnyPerMillion(1)) + priceTokens(50, cnyPerMillion(2)))
+assert.equal(stats.byPeriod['CNY']!.peak, priceTokens(80, cnyPerMillion(1.5)) + priceTokens(20, cnyPerMillion(0.03)) + priceTokens(30, cnyPerMillion(3)))
+assert.ok(Math.abs(stats.cacheHitRate - 20/200) < 1e-9)
+
+// --- per-turn fold: turns[] + lastRequestInputTokens ---
+assert.equal(stats.turns.length, 2, 'one TurnCost per assistant/message')
+assert.deepEqual(stats.turns[0], {
+  turn: 1, step: 1, time: at('2026-08-17T12:00:05+08:00'),
+  inputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 50,
+  cacheHitRate: 0, cost: priceTokens(100, cnyPerMillion(1)) + priceTokens(50, cnyPerMillion(2)),
+  currency: 'CNY', period: 'off-peak', priced: true,
+}, 'turn 1 folded: off-peak, no cache hit')
+assert.deepEqual(stats.turns[1], {
+  turn: 1, step: 1, time: at('2026-08-17T23:00:00+08:00'),
+  inputTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 0, outputTokens: 30,
+  cacheHitRate: 0.2, cost: priceTokens(80, cnyPerMillion(1.5)) + priceTokens(20, cnyPerMillion(0.03)) + priceTokens(30, cnyPerMillion(3)),
+  currency: 'CNY', period: 'peak', priced: true,
+}, 'turn 2 folded: peak, cache hit counted in total input')
+assert.equal(stats.lastRequestInputTokens, 100, 'lastRequestInputTokens = most recent request total input, not cumulative')
+
+// --- request/context: set window, clear on unknown-capacity switch ---
+const ctxLog: SessionEvent[] = [
+  { type: 'request/context', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', contextWindow: 128_000 } },
+  { type: 'request/context', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash' } },
+]
+assert.equal(foldBilling(ctxLog, table).contextWindow, undefined, 'request/context absent window clears it')
+assert.equal(foldBilling(ctxLog.slice(0, 1), table).contextWindow, 128_000, 'request/context present window sets it')
+
+// --- request/header: maxTokens sets maxOutputTokens, absent clears; no-op includes maxTokens ---
+const hdrMaxLog: SessionEvent[] = [
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 8192 } }, reason: 'initial' } },
+  hdr(at('2026-08-17T12:00:10+08:00')),
+]
+const hdrMax = foldBilling(hdrMaxLog, table)
+assert.equal(hdrMax.maxOutputTokens, undefined, 'header without maxTokens clears maxOutputTokens')
+const hdrMax2 = foldBilling(hdrMaxLog.slice(0, 1), table)
+assert.equal(hdrMax2.maxOutputTokens, 8192, 'header maxTokens sets maxOutputTokens')
+
+// --- no-op fast path: a header changing only maxTokens updates maxOutputTokens ---
+const noOpLog: SessionEvent[] = [
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 4096 } }, reason: 'initial' } },
+  { type: 'request/header', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 8192 } }, reason: 'change' } },
+]
+assert.equal(foldBilling(noOpLog, table).maxOutputTokens, 8192, 'maxTokens-only header change still updates maxOutputTokens')
+
+// --- bounded turns: fold keeps full, foldBillingBounded caps at 50 TURNS ---
+// 60 turns × 2 requests each (a turn with tool-calling steps has >1 request).
+const manyLog: SessionEvent[] = [hdr(at('2026-08-17T12:00:00+08:00'))]
+for (let i = 1; i <= 60; i += 1) {
+  manyLog.push({ type: 'assistant/message', seq: i * 2 - 1, time: at('2026-08-17T12:00:00+08:00') + i * 10, data: { turn: i, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } }, surfaceOp: 'append' })
+  manyLog.push({ type: 'assistant/message', seq: i * 2, time: at('2026-08-17T12:00:00+08:00') + i * 10 + 1, data: { turn: i, step: 2, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 0 } }, surfaceOp: 'append' })
+}
+assert.equal(foldBilling(manyLog, table).turns.length, 120, 'raw fold keeps full history (60 turns × 2 requests)')
+const bounded = foldBillingBounded(manyLog, table)
+assert.equal(bounded.turns.length, 100, 'bounded fold caps at 50 TURNS (100 requests kept)')
+// The LAST 50 turns are kept (turns 11..60), each with both of its requests.
+assert.equal(bounded.turns[0]!.turn, 11, 'bounded keeps the LAST 50 turns')
+assert.equal(bounded.turns[1]!.turn, 11, 'a kept turn keeps both its requests')
+assert.equal(bounded.turns[bounded.turns.length - 1]!.turn, 60, 'newest turn preserved')
+assert.equal(bounded.turns[bounded.turns.length - 1]!.step, 2, 'newest turn keeps its last step')
+
+// --- empty log → turns [], context fields absent ---
+const emptyStats = foldBilling([], table)
+assert.deepEqual(emptyStats.turns, [], 'no requests → empty turns')
+assert.equal(emptyStats.lastRequestInputTokens, undefined)
+assert.equal(emptyStats.contextWindow, undefined)
+assert.equal(emptyStats.maxOutputTokens, undefined)
+
+// --- assistant/message WITHOUT usage → not in turns, not in totals ---
+const noUsageLog: SessionEvent[] = [
+  hdr(at('2026-08-17T12:00:00+08:00')),
+  { type: 'assistant/message', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash') }, surfaceOp: 'append' },
+  msg(2, at('2026-08-17T12:00:10+08:00'), 10, 5, 0),
+]
+const noUsage = foldBilling(noUsageLog, table)
+assert.equal(noUsage.turns.length, 1, 'message without usage is not recorded in turns')
+assert.equal(noUsage.turns[0]!.inputTokens, 10, 'only the usage-bearing message forms a turn')
+assert.equal(noUsage.uncachedInputTokens, 10, 'message without usage adds no tokens')
+assert.equal(noUsage.requestCount, 1, 'message without usage is not counted as a priced request')
+assert.equal(noUsage.lastRequestInputTokens, 10, 'lastRequestInputTokens from the usage-bearing message')
+
+// --- unregistered model → unpricedRequestCount, no cost ---
+const unregLog: SessionEvent[] = [
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'no/such-model' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
+]
+const unreg = foldBilling(unregLog, table)
+assert.equal(unreg.requestCount, 0)
+assert.equal(unreg.unpricedRequestCount, 1)
+assert.equal(unreg.cost['CNY'], undefined)
+assert.equal(unreg.hasPeakConfig, false)
+assert.deepEqual(unreg.peakModels, [])
+assert.equal(unreg.turns.length, 1, 'unpriced request still recorded in turns')
+assert.equal(unreg.turns[0]!.priced, false, 'unpriced request marked priced=false')
+assert.equal(unreg.turns[0]!.cost, 0, 'unpriced request cost is 0')
+assert.equal(unreg.turns[0]!.inputTokens, 100, 'unpriced request tokens are real')
+assert.deepEqual(unreg.currentModel, { provider: 'wpsai', model: 'no/such-model' }, 'unpriced model still tracked as current')
+
+// --- no peak period → hasPeakConfig false, all off-peak ---
+const noPeakTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{ provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02) }],
+}
+const noPeak = foldBilling(log, noPeakTable)
+assert.equal(noPeak.hasPeakConfig, false)
+assert.deepEqual(noPeak.peakModels, [])
+assert.equal(noPeak.byPeriod['CNY']!.peak, 0)
+assert.equal(noPeak.byPeriod['CNY']!.offPeak, priceTokens(180, cnyPerMillion(1)) + priceTokens(20, cnyPerMillion(0.02)) + priceTokens(80, cnyPerMillion(2)))
+
+// --- multi-currency: a second provider billed in USD ---
+const multiTable: PriceTable = {
+  providers: {
+    wpsai: { currency: 'CNY', currencySymbol: '¥' },
+    google: { currency: 'USD', currencySymbol: '$' },
+  },
+  models: [
+    { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: 0 },
+    { provider: 'google', model: 'gemini-x', input: Math.round(2 * PRICE_PRECISION), output: Math.round(8 * PRICE_PRECISION), cacheInput: 0 },
+  ],
+}
+const multiLog: SessionEvent[] = [
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'google', model: 'gemini-x' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 1000, 100, 0),
+]
+const multi = foldBilling(multiLog, multiTable)
+assert.equal(multi.cost['USD'], priceTokens(1000, Math.round(2 * PRICE_PRECISION)) + priceTokens(100, Math.round(8 * PRICE_PRECISION)))
+assert.equal(multi.cost['CNY'], undefined)
+
+console.log('ALL PURE CHECKS PASSED')
+
+// --- empty days = every day (schema default []) ---
+const emptyDaysPeak = { startHour: 22, endHour: 6, days: [], input: 1, output: 1, cacheInput: 1 }
+assert.equal(inPeakWindow(emptyDaysPeak, at('2026-08-17T23:00:00+08:00')), true, 'empty days means every day')
+const restrictedDays = { startHour: 0, endHour: 24, days: [1], input: 1, output: 1, cacheInput: 1 }
+// 2026-08-17 is Monday (getDay 1); 2026-08-18 is Tuesday (getDay 2).
+assert.equal(inPeakWindow(restrictedDays, at('2026-08-17T12:00:00+08:00')), true, 'Monday matches days=[1]')
+assert.equal(inPeakWindow(restrictedDays, at('2026-08-18T12:00:00+08:00')), false, 'Tuesday not in days=[1]')
+
+console.log('EMPTY-DAYS CHECK PASSED')
+
+// --- cacheWrite priced independently, not as cacheInput ---
+const cwTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{ provider: 'wpsai', model: 'cw-model', input: cnyPerMillion(10), output: cnyPerMillion(30), cacheInput: cnyPerMillion(1), cacheWrite: cnyPerMillion(12.5) }],
+}
+const cwHeader: SessionEvent<'request/header'> = {
+  type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'),
+  data: { header: { config: { provider: 'wpsai', model: 'cw-model' } }, reason: 'initial' },
+}
+// Fold over the event with cacheWrite usage; expect cacheWrite priced at its own rate.
+const cwEvent: SessionEvent<'assistant/message'> = {
+  type: 'assistant/message', seq: 1, time: at('2026-08-17T12:00:05+08:00'),
+  data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'cw-model'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 200 } },
+  surfaceOp: 'append',
+}
+const cwStats = foldBilling([cwHeader, cwEvent], cwTable)
+assert.equal(cwStats.cacheWriteTokens, 200)
+assert.equal(cwStats.cost['CNY'], priceTokens(100, cnyPerMillion(10)) + priceTokens(200, cnyPerMillion(12.5)) + priceTokens(50, cnyPerMillion(30)),
+  'cacheWrite priced at its own 1.25x-input rate, not at cacheInput')
+
+// --- cacheWrite absent → priced at 0 ---
+const cwZeroTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{ provider: 'wpsai', model: 'cw-model', input: cnyPerMillion(10), output: cnyPerMillion(30), cacheInput: cnyPerMillion(1) }],
+}
+const cwZero = foldBilling([cwHeader, cwEvent], cwZeroTable)
+assert.equal(cwZero.cost['CNY'], priceTokens(100, cnyPerMillion(10)) + priceTokens(200, 0) + priceTokens(50, cnyPerMillion(30)),
+  'absent cacheWrite defaults to 0')
+
+// --- tiered pricing (zai GLM-5.1): 输入 [0,32K) 6/24/1.3 · [32K+) 8/28/2 ---
+const tierTable: PriceTable = {
+  providers: { zai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'zai', model: 'glm-5.1',
+    input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0,
+    tiers: [
+      { inputMax: 32_000, input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0 },
+      { inputMin: 32_000, input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0 },
+    ],
+  }],
+}
+const tierShort = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 31_000, 500, 0),
+], tierTable)
+assert.equal(tierShort.cost['CNY'], priceTokens(31_000, cnyPerMillion(6)) + priceTokens(500, cnyPerMillion(24)),
+  '31K input → tier 1 (0,32K)')
+const tierLong = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 40_000, 500, 0),
+], tierTable)
+assert.equal(tierLong.cost['CNY'], priceTokens(40_000, cnyPerMillion(8)) + priceTokens(500, cnyPerMillion(28)),
+  '40K input → tier 2 (32K+)')
+const tierBoundary = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 32_000, 500, 0),
+], tierTable)
+assert.equal(tierBoundary.cost['CNY'], priceTokens(32_000, cnyPerMillion(8)) + priceTokens(500, cnyPerMillion(28)),
+  'exactly 32K input → tier 2 (inputMax exclusive)')
+// The per-turn row for a tiered request carries the SAME tiered cost (detail
+// and totals stay identical even with length-based pricing).
+assert.equal(tierLong.turns.length, 1, 'tiered request produces one turn row')
+assert.equal(tierLong.turns[0]!.cost, priceTokens(40_000, cnyPerMillion(8)) + priceTokens(500, cnyPerMillion(28)),
+  'tiered turn cost matches the matched tier prices')
+assert.equal(tierLong.turns[0]!.inputTokens, 40_000, 'tiered turn input is the total input length')
+assert.equal(tierLong.turns[0]!.priced, true, 'tiered model is priced')
+
+// --- tiered pricing (zai GLM-4.7): output length splits short vs long ---
+const tier47Table: PriceTable = {
+  providers: { zai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'zai', model: 'glm-4.7',
+    input: cnyPerMillion(2), output: cnyPerMillion(8), cacheInput: cnyPerMillion(0.4), cacheWrite: 0,
+    tiers: [
+      { inputMax: 32_000, outputMax: 200, input: cnyPerMillion(2), output: cnyPerMillion(8), cacheInput: cnyPerMillion(0.4), cacheWrite: 0 },
+      { inputMax: 32_000, outputMin: 200, input: cnyPerMillion(3), output: cnyPerMillion(14), cacheInput: cnyPerMillion(0.6), cacheWrite: 0 },
+      { inputMin: 32_000, inputMax: 200_000, input: cnyPerMillion(4), output: cnyPerMillion(16), cacheInput: cnyPerMillion(0.8), cacheWrite: 0 },
+    ],
+  }],
+}
+const tier47Short = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 10_000, 100, 0),
+], tier47Table)
+assert.equal(tier47Short.cost['CNY'], priceTokens(10_000, cnyPerMillion(2)) + priceTokens(100, cnyPerMillion(8)),
+  '10K in + 100 out → tier 1')
+const tier47Long = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 10_000, 250, 0),
+], tier47Table)
+assert.equal(tier47Long.cost['CNY'], priceTokens(10_000, cnyPerMillion(3)) + priceTokens(250, cnyPerMillion(14)),
+  '10K in + 250 out → tier 2')
+const tier47Big = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 50_000, 10_000, 0),
+], tier47Table)
+assert.equal(tier47Big.cost['CNY'], priceTokens(50_000, cnyPerMillion(4)) + priceTokens(10_000, cnyPerMillion(16)),
+  '50K in → tier 3 (input 32K..200K), output ignored')
+const tier47Out200 = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 10_000, 200, 0),
+], tier47Table)
+assert.equal(tier47Out200.cost['CNY'], priceTokens(10_000, cnyPerMillion(3)) + priceTokens(200, cnyPerMillion(14)),
+  'exactly 200 out → tier 2 (outputMax exclusive)')
+
+// --- cache write counted into total input for tier matching ---
+const tierCw = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  { type: 'assistant/message', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('zai', 'glm-5.1'), usage: { inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 30_000 } }, surfaceOp: 'append' },
+], tierTable)
+assert.equal(tierCw.cost['CNY'], priceTokens(10_000, cnyPerMillion(8)) + priceTokens(30_000, 0) + priceTokens(100, cnyPerMillion(28)),
+  'cache write 30K pushes total input to 40K → tier 2, cacheWrite at 0')
+
+// --- default table includes the zai tiers ---
+const defaultZai = DEFAULT_TABLE.models.find(m => m.provider === 'zai' && m.model === 'glm-5.1')
+assert.ok(defaultZai !== undefined && defaultZai.tiers?.length === 2, 'default table has glm-5.1 with 2 tiers')
+const defaultZai47 = DEFAULT_TABLE.models.find(m => m.provider === 'zai' && m.model === 'glm-4.7')
+assert.ok(defaultZai47 !== undefined && defaultZai47.tiers?.length === 3, 'default table has glm-4.7 with 3 tiers')
+assert.equal(DEFAULT_TABLE.providers.zai?.currency, 'CNY', 'zai provider defaults to CNY')
+
+// --- peak period's per-tier prices align by index with the base ranges ---
+const peakTierTable: PriceTable = {
+  providers: { zai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'zai', model: 'glm-5.1',
+    input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0,
+    // Base tier RANGES (the single source of range structure).
+    tiers: [
+      { inputMax: 32_000, input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0 },
+      { inputMin: 32_000, input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0 },
+    ],
+    periods: [{
+      startHour: 9, endHour: 12,
+      input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0,
+      // Period tiers carry ONLY prices, aligned by index with the base ranges.
+      tiers: [
+        { input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0 },
+        { input: cnyPerMillion(12), output: cnyPerMillion(42), cacheInput: cnyPerMillion(3), cacheWrite: 0 },
+      ],
+    }],
+  }],
+}
+// 10:00 peak, 40K input → base range index 1 (32K+) → PERIOD's tier[1] (12/42).
+const peakTier = effectivePrice(peakTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T10:00:00+08:00'), 40_000, 500)
+assert.deepEqual(peakTier, {
+  input: cnyPerMillion(12), output: cnyPerMillion(42), cacheInput: cnyPerMillion(3), cacheWrite: 0, period: 'peak', found: true,
+}, 'active peak uses per-index period price for base range 1')
+// 10:00 peak, 10K input → base range index 0 → PERIOD's tier[0] (9/36).
+const peakTierShort = effectivePrice(peakTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T10:00:00+08:00'), 10_000, 100)
+assert.deepEqual(peakTierShort, {
+  input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'peak', found: true,
+}, 'active peak uses per-index period price for base range 0')
+// A peak period WITHOUT per-tier prices uses its flat price even for tiered models.
+const peakNoTiersTable: PriceTable = {
+  providers: { zai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'zai', model: 'glm-5.1',
+    input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0,
+    tiers: [
+      { inputMax: 32_000, input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0 },
+      { inputMin: 32_000, input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0 },
+    ],
+    periods: [{
+      startHour: 9, endHour: 12,
+      input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0,
+      // No per-tier prices → flat price applies during peak.
+    }],
+  }],
+}
+const peakFlat = effectivePrice(peakNoTiersTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T10:00:00+08:00'), 40_000, 500)
+assert.deepEqual(peakFlat, {
+  input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'peak', found: true,
+}, 'period without per-tier prices uses its flat price')
+
+// --- default tier = unbounded (all lengths) acts as the fallback; specific
+//     range tiers take precedence (new model: default price is tier 0) ---
+const defaultTierTable: PriceTable = {
+  providers: { zai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'zai', model: 'glm-5.1',
+    input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0,
+    // tier 0 = default (no range = all lengths), tier 1 = 32K+.
+    tiers: [
+      { input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0 },
+      { inputMin: 32_000, input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0 },
+    ],
+  }],
+}
+// 40K input → matches tier 1 (32K+) → 8/28.
+const dtLong = effectivePrice(defaultTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T12:00:00+08:00'), 40_000, 500)
+assert.deepEqual(dtLong, {
+  input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'off-peak', found: true,
+}, 'specific range tier wins over the unbounded default tier')
+// 10K input → no specific tier matches → falls back to the default (tier 0) prices.
+const dtShort = effectivePrice(defaultTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T12:00:00+08:00'), 10_000, 100)
+assert.deepEqual(dtShort, {
+  input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0, period: 'off-peak', found: true,
+}, 'unbounded default tier is the fallback for unmatched lengths')
+// A tier-only table with NO unbounded tier and NO flat fallback: 50K matches 32K+.
+const dtOnly = effectivePrice(defaultTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T12:00:00+08:00'), 50_000, 500)
+assert.deepEqual(dtOnly, {
+  input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'off-peak', found: true,
+}, '50K still matches the 32K+ tier')
+
+console.log('ALL NEW CHECKS PASSED')
+
+// --- foldEvent: an unchanged request/header config is a no-op (same state object) ---
+const firstHeader = foldEvent({ header: undefined, stats: EMPTY_STATS }, hdr(at('2026-08-17T12:00:00+08:00')), table)
+const sameHeader = foldEvent(firstHeader, hdr(at('2026-08-17T12:05:00+08:00')), table)
+assert.equal(sameHeader, firstHeader, 'unchanged header config returns the same state (no no-op frame)')
+
+console.log('HEADER NO-OP CHECK PASSED')
+
+// --- aggregateTurns: multiple steps of one turn merge into one summary ---
+const turnRows: Parameters<typeof aggregateTurns>[0] = [
+  { turn: 1, step: 1, time: 1000, inputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 50, cacheHitRate: 0, cost: 1000, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 1, step: 2, time: 2000, inputTokens: 50, cacheReadTokens: 30, cacheWriteTokens: 10, outputTokens: 20, cacheHitRate: 30 / 80, cost: 500, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 2, step: 1, time: 3000, inputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 300, currency: 'CNY', period: 'peak', priced: true },
+  { turn: 1, step: 3, time: 4000, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 5, cacheHitRate: 0, cost: 0, currency: 'USD', period: 'off-peak', priced: false },
+]
+const agg = aggregateTurns(turnRows)
+assert.equal(agg.length, 3, 'two CNY turns + one separate-currency turn')
+const turn1 = agg.find(a => a.turn === 1 && a.currency === 'CNY')!
+assert.equal(turn1.requests, 2, 'turn 1 merges its two CNY steps')
+assert.equal(turn1.inputTokens, 150, 'input sums across steps')
+assert.equal(turn1.cacheReadTokens, 30, 'cache read sums')
+assert.equal(turn1.cacheWriteTokens, 10, 'cache write sums')
+assert.equal(turn1.outputTokens, 70, 'output sums')
+assert.equal(turn1.cost, 1500, 'cost sums')
+assert.equal(turn1.time, 2000, 'keeps the last request time')
+assert.equal(turn1.priced, true, 'priced when all merged steps are priced')
+const turn1usd = agg.find(a => a.turn === 1 && a.currency === 'USD')!
+assert.equal(turn1usd.requests, 1, 'different currency is a separate summary (no mixing)')
+assert.equal(turn1usd.priced, false, 'an unpriced step keeps its turn unpriced')
+const turn2 = agg.find(a => a.turn === 2)!
+assert.equal(turn2.period, 'peak', 'single-request turn keeps its period')
+assert.equal(Math.abs(turn1.cacheHitRate - 30 / 140) < 1e-9, true, 'hit rate re-derived from summed buckets (30/(110+30)=30/140)')
+assert.equal(aggregateTurns([]).length, 0, 'empty input → empty output')
+
+console.log('AGGREGATE TURNS CHECK PASSED')

@@ -1,0 +1,454 @@
+.root {
+  position: relative;
+  display: inline-flex;
+}
+
+.triggerWrap {
+  display: inline-flex;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.trigger:hover,
+.trigger:focus-visible {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.badge {
+  font-family: var(--dsw-font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Header state tags beside the badge: rounded inline-code chips with a
+ * muted per-state tint — 高峰 red, 空闲 gray, 未登记价格 amber. */
+.peakTag,
+.offPeakTag,
+.unpricedTag {
+  flex: none;
+  font-family: var(--dsw-font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.peakTag {
+  color: var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+}
+
+.offPeakTag {
+  color: var(--dsw-alias-label-tertiary);
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 14%, transparent);
+}
+
+.unpricedTag {
+  color: var(--dsw-alias-state-warn-label);
+  background: var(--dsw-alias-state-warn-tertiary);
+}
+
+.chevron {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 150ms ease;
+}
+
+.chevronOpen {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  transform: rotate(180deg);
+  transition: transform 150ms ease;
+}
+
+/* Portaled card: fixed-width, box-sizing keeps content inside. */
+.card {
+  position: fixed;
+  z-index: 100;
+  box-sizing: border-box;
+  width: 300px;
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv3);
+  color: var(--dsw-alias-label-primary);
+}
+
+.cardInner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.titleGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cardTitle {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+/* The current provider/model line under the card title. A tag-shaped info
+ * block (markdown-tag: light = subtle grey, dark = one step deeper than the
+ * card surface) so it reads as metadata, never competing with the token/cost
+ * figures. The earlier `interactive-bg-hover-accent` fill was too strong in
+ * dark mode (24% white over the card) and visually stole the focus. */
+.modelLine {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-markdown-tag);
+  font-family: var(--dsw-font-mono);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.modelProvider,
+.modelSlash,
+.modelEffort {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.modelName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-primary);
+}
+
+.refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.refresh:hover,
+.refresh:focus-visible {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  margin: 0;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.grid dt {
+  color: var(--dsw-alias-label-secondary);
+  min-width: 0;
+}
+
+.grid dd {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.costBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  min-width: 0;
+}
+
+.costRows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.costRow,
+.periodRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.costLabel,
+.periodLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  min-width: 0;
+  text-align: left;
+}
+
+.costValue,
+.periodValue {
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.periodRows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.periodRow + .periodRow {
+  margin-top: 0;
+}
+
+.periodLabel,
+.periodValue {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.settings:hover,
+.settings:focus-visible {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.headActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.detail {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.detail:hover,
+.detail:focus-visible {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Context-usage bar: cumulative input over the model's context window. */
+.contextBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.contextLabelRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.contextLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.contextValue {
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.contextTrack {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--dsw-alias-bg-layer-3);
+  overflow: hidden;
+}
+
+.contextFill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--dsw-alias-state-business-primary);
+  transition: width 200ms ease;
+}
+
+.contextFillNear {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.contextMeta {
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-mono);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.contextWarn {
+  color: var(--dsw-alias-state-warn-label);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.contextHint {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+/* Recent-turns mini chart: one horizontal bar per turn. */
+.turnsBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.turnsHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.turnsLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.turnsCount {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.turnsBars {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.turnRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.turnNo {
+  flex: none;
+  width: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-mono);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: right;
+}
+
+.turnTrack {
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-layer-3);
+  overflow: hidden;
+}
+
+.turnFill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--dsw-static-deepseek-400);
+}
+
+.turnFillPeak {
+  background: var(--dsw-static-amber-400);
+}
+
+.turnCost {
+  flex: none;
+  min-width: 44px;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 14px;
+  text-align: right;
+}
