@@ -24,6 +24,8 @@ import { getTurns } from './billing-api.ts'
 import { aggregateTurns, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { currencySymbol } from './BillingAction.tsx'
 import type { BillingKey } from './locales.ts'
+import { useTooltipState } from './Tooltip.tsx'
+import './theme.module.css'
 import css from './BillingTurnsPanel.module.css'
 
 /** Full props for the turns detail panel. */
@@ -60,18 +62,39 @@ function turnLabel(row: TurnCost | TurnSummary, t: (key: BillingKey) => string):
   return `${row.turn}.${row.step}`
 }
 
+/** X-axis label under a bar: NUMBERS ONLY (`12`, `12.3`). The full
+ *  `轮次 N` / `N.step` text lives in the tooltip and the table; a wide
+ *  localized label inside a fixed-width column would truncate into
+ *  「轮次轮次轮次…」 (the header above the chart already says 按轮次). */
+function axisBarLabel(row: TurnCost | TurnSummary): string {
+  if ('requests' in row) return String(row.turn)
+  return `${row.turn}.${row.step}`
+}
+
 /** One cost/token chart with a left-hand value axis, turns in log order
- *  (oldest on the left, newest on the right — the x-axis is chronological). */
-function TurnChart({ rows, dimension, t }: {
+ *  (oldest on the left, newest on the right — the x-axis is chronological).
+ *  `dense` = per-request mode: half-width bars for a macro trend view and
+ *  sparser labels (a request-level axis is about shape, not per-bar IDs). */
+function TurnChart({ rows, dimension, t, dense = false }: {
   rows: readonly TurnCost[] | readonly TurnSummary[]
   dimension: 'cost' | 'tokens'
   t: (key: BillingKey) => string
+  dense?: boolean
 }) {
   const maxCost = Math.max(...rows.map(r => r.cost), 1)
   const maxTokens = Math.max(...rows.map(r => r.inputTokens + r.outputTokens), 1)
   const max = dimension === 'cost' ? maxCost : maxTokens
   const ticks = axisTicks(max)
-  const manyBars = rows.length > 40
+  // Fixed-width bars, chronological left→right; the chart column scrolls
+  // horizontally while the value axis stays pinned on the left.
+  // X-axis label thinning: labels are pure numbers (`12` / `12.3`) so they
+  // fit a 24px column, but hundreds of bars would still smear — label every
+  // k-th column (first and last always labelled; the tooltip names every
+  // bar exactly). Dense (per-request) bars thin harder: the axis reads as
+  // a macro timeline, exact IDs stay in the tooltip/table.
+  const labelEvery = dense
+    ? (rows.length > 80 ? 8 : rows.length > 40 ? 4 : 2)
+    : (rows.length > 40 ? 4 : rows.length > 20 ? 2 : 1)
   // Axis unit: the dominant currency symbol for cost, "tok" for tokens.
   const symbol = dimension === 'cost'
     ? currencySymbol(rows.map(r => r.currency).sort((a, b) => a.localeCompare(b))[0] ?? 'CNY')
@@ -79,9 +102,20 @@ function TurnChart({ rows, dimension, t }: {
   const axisLabel = (v: number): string => dimension === 'cost'
     ? formatPriceAxis(v, symbol)
     : formatTokens(v)
+  // Shared tooltip state: one tooltip for both chart modes (same dwell as
+  // the badge card and its buttons — interaction.ts is the single source).
+  const [hovered, setHovered] = useState<TurnCost | TurnSummary | null>(null)
+  const [, setTooltipAnchor, tooltip] = useTooltipState({
+    label: hovered !== null
+      ? dimension === 'cost'
+        ? `${turnLabel(hovered, t)} · ${hovered.priced ? formatPrice(hovered.cost, currencySymbol(hovered.currency)) : t('turn.unpriced')}`
+        : `${turnLabel(hovered, t)} · ${formatTokens(hovered.inputTokens)}/${formatTokens(hovered.outputTokens)}`
+      : '',
+    align: 'center',
+  })
 
   return (
-    <div className={manyBars ? `${css.chartWrap} ${css.scrollX}` : css.chartWrap}>
+    <div className={css.chartWrap}>
       <div className={css.chartGrid}>
         <div className={css.axis}>
           {/* Render max→0 top→bottom so the 0 tick sits on the chart's
@@ -90,28 +124,50 @@ function TurnChart({ rows, dimension, t }: {
             <span key={v} className={css.axisTick}>{axisLabel(v)}</span>
           ))}
         </div>
-        <div className={dimension === 'cost' ? css.barChart : css.stackChart}>
-          {rows.map((row, i) => dimension === 'cost' ? (
-            <div key={i} className={css.barCol} title={`${turnLabel(row, t)} · ${row.priced ? formatPrice(row.cost, currencySymbol(row.currency)) : t('turn.unpriced')}`}>
+        <div className={dimension === 'cost'
+          ? `${css.barChart} ${css.scrollX}${dense ? ` ${css.dense}` : ''}`
+          : `${css.stackChart} ${css.scrollX}${dense ? ` ${css.dense}` : ''}`}>
+          {rows.map((row, i) => {
+            // Per-request mode: the FIRST request of each turn is a turn
+            // boundary — extra leading gap (visual grouping); its axis label
+            // (`N.1`) is always shown AND bolded, so turn starts are findable
+            // at a glance without box outlines on the bars.
+            const turnStart = dense && !('requests' in row) && row.step === 1
+            const labelled = turnStart || i % labelEvery === 0 || i === rows.length - 1
+            const colClass = turnStart ? `${css.barCol} ${css.turnStart}` : css.barCol
+            return dimension === 'cost' ? (
               <div
-                className={`${css.bar}${row.period === 'peak' ? ` ${css.barPeak}` : ''}${row.priced ? '' : ` ${css.barUnpriced}`}`}
-                style={{ height: `${Math.max(2, (row.cost / maxCost) * 100)}%` }}
-              />
-              <span className={css.barLabel}>{turnLabel(row, t)}</span>
-            </div>
-          ) : (
-            <div key={i} className={css.stackCol} title={`${turnLabel(row, t)} · ${formatTokens(row.inputTokens)}/${formatTokens(row.outputTokens)}`}>
-              <div className={css.stackWrap}>
-                <div className={css.stackOutput} style={{ height: `${Math.max(1, (row.outputTokens / maxTokens) * 100)}%` }} />
-                <div className={css.stackCacheWrite} style={{ height: `${Math.max(0, (row.cacheWriteTokens / maxTokens) * 100)}%` }} />
-                <div className={css.stackCacheRead} style={{ height: `${Math.max(0, (row.cacheReadTokens / maxTokens) * 100)}%` }} />
-                <div className={css.stackUncached} style={{ height: `${Math.max(1, ((row.inputTokens - row.cacheReadTokens - row.cacheWriteTokens) / maxTokens) * 100)}%` }} />
+                key={i}
+                className={colClass}
+                onPointerEnter={(e) => { setHovered(row); setTooltipAnchor(e.currentTarget) }}
+                onPointerLeave={() => { setHovered(null); setTooltipAnchor(null) }}
+              >
+                <div
+                  className={`${css.bar}${row.period === 'peak' ? ` ${css.barPeak}` : ''}${row.priced ? '' : ` ${css.barUnpriced}`}`}
+                  style={{ height: `${Math.max(2, (row.cost / maxCost) * 100)}%` }}
+                />
+                <span className={css.barLabel}>{labelled ? axisBarLabel(row) : '\u00A0'}</span>
               </div>
-              <span className={css.barLabel}>{turnLabel(row, t)}</span>
-            </div>
-          ))}
+            ) : (
+              <div
+                key={i}
+                className={turnStart ? `${css.stackCol} ${css.turnStart}` : css.stackCol}
+                onPointerEnter={(e) => { setHovered(row); setTooltipAnchor(e.currentTarget) }}
+                onPointerLeave={() => { setHovered(null); setTooltipAnchor(null) }}
+              >
+                <div className={css.stackWrap}>
+                  <div className={css.stackOutput} style={{ height: `${Math.max(1, (row.outputTokens / maxTokens) * 100)}%` }} />
+                  <div className={css.stackCacheWrite} style={{ height: `${Math.max(0, (row.cacheWriteTokens / maxTokens) * 100)}%` }} />
+                  <div className={css.stackCacheRead} style={{ height: `${Math.max(0, (row.cacheReadTokens / maxTokens) * 100)}%` }} />
+                  <div className={css.stackUncached} style={{ height: `${Math.max(1, ((row.inputTokens - row.cacheReadTokens - row.cacheWriteTokens) / maxTokens) * 100)}%` }} />
+                </div>
+                <span className={css.barLabel}>{labelled ? axisBarLabel(row) : '\u00A0'}</span>
+              </div>
+            )
+          })}
         </div>
       </div>
+      {tooltip}
     </div>
   )
 }
@@ -284,7 +340,7 @@ export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurns
             >
               {t('refresh.title')}
             </button>
-            <button type="button" className={css.close} onClick={onClose} aria-label={t('settings.open')}>×</button>
+            <button type="button" className={css.close} onClick={onClose} aria-label={t('turn.close')}>×</button>
           </div>
         </div>
 
@@ -309,7 +365,8 @@ export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurns
                   </div>
                 </div>
               </div>
-              <TurnChart rows={chartRows} dimension={dimension} t={t} />              <div className={css.legend}>
+              <TurnChart rows={chartRows} dimension={dimension} t={t} dense={!grouped} />
+              <div className={css.legend}>
                 {dimension === 'cost' ? (
                   hasPeak ? (
                     <>

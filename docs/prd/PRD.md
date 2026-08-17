@@ -219,6 +219,38 @@
 
 ## 10. 迭代记录
 
+### v0.3.9（压缩预估稳定性 + 横轴强调方式）
+- **预估改 trimmed mean**：增速从「最近 5 轮简单平均」改为**最近 10 轮正差分 trimmed mean**（去掉最大最小各一个），单轮偏轻/偏重不再左右预估；<3 个正差分或无余量不显示。纯函数 `estimateCompactionGrowth`/`estimateCompactionEta` 提取到 `shared.ts` 并补单元测试（COMPACTION ETA CHECK）。
+- **横轴强调改到标签**：轮次首请求（`N.1`）不再给柱体加 1px 描边（观感差），改为标签加粗 + 提亮（`font-weight 600` + secondary 色），前导 8px 间距保留。
+
+### v0.3.8（压缩预估模型修正 + 触发线口径 + 轮次边界分组）
+- **修压缩预估模型（P0）**：原实现把「每轮请求总输入」当增速——但一轮输入包含全部历史，水平值可达几十 K，headroom 只有窗口的 38% 时算出「1 轮后压缩」。改为**相邻轮次输入的差分**（每轮净增 = 本轮总输入 − 上轮总输入；差分 ≤0 丢弃——压缩后水平重置），ETA = headroom ÷ 平均正差分；<2 轮或全无正差分不显示。文案改「净增 +X/轮，约 N 轮后触发」。v0.3.9 再修：轮级水平取**该轮最后一个请求**的输入（工具调用轮内每个 step 重发全上下文，求和会多倍虚增——曾算出 +12.61M/轮），差分对水平做。
+- **触发线口径澄清**：`thresholdRatio` 是 compaction-basic 的**私有 cordis patch 配置**（当前宿主 bundle 未覆盖 = 默认 0.8），无 settings 命名空间、无运行时读取面——0.8 作为「默认触发线」如实标注（tooltip 说明「宿主若覆盖则此线为近似」），不再冒充读自配置。
+- **触发线样式重做**：2px 实心琥珀竖线 → 1px 半透明（45%）hairline + 顶部 4px 缺口标记，读作参考线而非数据。
+- **按请求图轮次边界分组**：dense 模式下每轮**第一个请求**（step=1）加 8px 前导间距；其横轴标签 `N.1` 必标（与抽稀正交）**并加粗 + 提亮**（原方案给柱体加 1px 描边，观感差，改为在横轴标签上强调），轮次起点一眼可寻。
+
+### v0.3.7（压缩预测条 + 请求级密集图）
+- **压缩预测条（卡片占用条升级）**：
+  - host 折叠 `compaction/summary` 事件（类型经 `import type {} from '@deepseek-ai/dsh-compaction'` 的 declaration merge 引入）→ `SessionBillingStats.compactions`（`count`/`lastTime`/`lastShadowedTokens`，全部为 harness 写好的真实 shadow price，插件零估算）；投影 `stateVersion` 6 → 7；`assertEmptyBillingStats` 同步。
+  - 占用条 80% 处加琥珀触发线（compaction-basic 默认 `thresholdRatio=0.8` × contextWindow，即自动压缩触发点）；有压缩史时显示「已压缩 N 次 · 上次 HH:MM:SS · 释放 X tokens」；用最近 ≤5 轮真实 usage 输入增速外推「预计 N 轮后触发压缩」（粗估：harness 计量全表面启发式估算、插件只见真实 usage，分母为输入+输出窗口；无增速/无余量不显示）。
+  - 新增文案 `card.compactDone`/`card.compactEta`（zh/en）；依赖新增 `@deepseek-ai/dsh-compaction ^0.1.0-rc.6`（peer + dev）；测试补 compaction 折叠断言。
+- **按请求密集图**：`TurnChart` 增加 `dense` 模式——「按请求」柱宽 24px → 12px（宏观趋势视角，精确值在 tooltip/表格），标签抽稀更激进（>40 根隔 4、>80 根隔 8，首尾必标）。
+
+### v0.3.6（图表横轴可读性 + 占用条口径修正）
+- **图表横轴改纯数字标签**：详情面板横轴从「轮次 N」改为纯数字（按轮次 `12`、按请求 `12.3`），表头与 tooltip 保留完整语义——原「轮次 N」中文标签在固定柱宽下被截成「轮次轮次轮次」，`N.step` 也被截断。
+- **柱宽固定 24px**（原 18px），容纳 3-4 位数字标签不截断；抽稀阈值重定（>20 根隔 1 标、>40 根隔 4 标，首尾必标）。
+- **占用条口径修正**：`request/context.contextWindow` 是 provider 声明的**输入+输出合计**窗口（harness `RequestContext` 定义），不是纯输入窗口——「最近一次请求输入占上下文 32%」这类提示是混合口径、无行动意义，已删除（`SINGLE_TURN_WARN_RATIO` 与 `turn.lastInput` 一并移除）；占用条保留并注明口径（输入 / 输入+输出总窗口），≥85% 预警语义不变（输入接近总窗口时输出空间所剩无几）。
+- 死 CSS（`.contextHint`）与死文案清理。
+
+### v0.3.5（交互与视觉规范统一）
+- **交互节奏统一**：新增 `src/client/interaction.ts`——悬停打开 200ms / 离开关闭 300ms / 点击取消悬停打开 100ms / tooltip 延迟 400ms，卡片与图表/按钮 tooltip 共用同一套节奏（此前悬停卡片 120ms/150ms 与原生 title 的 OS 延迟明显不同步）。
+- **统一 Tooltip 替代原生 `title`**：新增 `src/client/Tooltip.tsx`（portaled、跟随锚点、Esc 关闭、z-index 300 高于卡片 100 与详情 mask 200，`role="tooltip"`）；卡片三个按钮与两个图表（迷你图、详情面板）全部改用它，原生 title 全部移除（读屏不可达、触屏无 hover、延迟不可控）。
+- **设计 token 单一事实源**：新增 `src/client/theme.module.css` 的 `--billing-*` 变量层（文本三阶/表面/边框/图表色/圆角/动效曲线），四个组件 CSS 全部改经该层解析（组件不再直接引用 `--dsw-*`），跨主题改一处生效。⚠️ 踩坑记录：dsw 主题变量定义在 `body`/`body[data-ds-dark-theme]` 上（非 `:root`），token 层曾误挂 `:root` 导致全部 alias 落到亮色 fallback、暗色模式整体失效——引用 `--dsw-*` 的 `--billing-*` 必须声明在 `body`，与主题无关的常量（z-index/圆角/动效）才放 `:root`。
+- **修悬停死区**：卡片与触发器之间的 8px 空隙会立刻触发离开关闭，指针无法进入卡片（P0）；新增不可见桥接层 + 卡片自身进入/离开处理，空隙不再算作离开。
+- **恢复输出上限展示**：卡片占用行重新显示 `maxOutputTokens`（v0.3 承诺，美化分支误删），与 `已用/窗口` 同行展示。
+- **无障碍**：卡片按钮 aria-label 规范（设置按钮改用动作语义 `settings.open.aria`）；详情面板关闭按钮修复（原误用 `settings.open` 文案）。
+- **杂项**：删除 `BillingCard` 死变量；设置页保存失败增加内联错误（原静默吞掉）；capability 行分隔符只在两个字段都存在时渲染（原单字段时也带 `·`）；投影 zod 收紧 `cacheHitRate` 0..1；catalog 按 provider 并发（原串行，慢 adapter 拖慢整页）；折叠改走 `priceRequest`（计价公式单点，原与 price.ts 双份漂移）；`assertEmptyBillingStats` 纳入测试。
+
 ### v0.3.4（逐轮面板方向与表头修正）
 - **图表横轴改为时间递增**：详情面板费用/token 图改为**最老轮在左、最新轮在右**（轮次从左到右递增，与阅读顺序一致）——原实现最新轮在左的倒序与时间直觉相反。列表仍保持最新轮在最上的倒序（表格阅读习惯），图表与列表解耦。
 - **明细表头去括号**：表头不再显示 `（缓存未命中）/（缓存命中）` 括号，改用简洁的「未命中 / 命中 / 写入 / 输出」（复用 `turn.*` 文案键，新增 `turn.cacheMiss`，zh/en 同步）。
@@ -334,4 +366,4 @@
 
 ---
 
-*最近更新：v0.3.4（图表横轴时间递增、明细表头去括号、请求序号始终带 step）。*
+*最近更新：v0.3.9（压缩预估改 10 轮 trimmed mean 稳定外推、横轴强调改标签加粗）。*

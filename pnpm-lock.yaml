@@ -39,6 +39,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-slots':
         specifier: ^0.1.0-rc.6
         version: 0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))
+      '@deepseek-ai/dsh-compaction':
+        specifier: ^0.1.0-rc.6
+        version: 0.1.0-rc.6(3f33aaf60a77493e2b168b052646ea2f)
       '@deepseek-ai/dsh-host-webserver':
         specifier: ^0.1.0-rc.6
         version: 0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))

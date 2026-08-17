@@ -1,0 +1,35 @@
+/**
+ * Tooltip bubble: one small floating surface above the anchor, styled with
+ * the same tokens every other billing surface uses (see theme.module.css).
+ * z-index 300 sits above the badge card (100) and the turns mask (200).
+ */
+.tooltip {
+  position: fixed;
+  z-index: 300;
+  max-width: 320px;
+  padding: 4px 8px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-float);
+  box-shadow: var(--billing-shadow);
+  color: var(--billing-text-primary);
+  font-family: var(--billing-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--billing-motion-fast) var(--billing-ease);
+}
+
+.tooltipVisible {
+  opacity: 1;
+}
+
+/** Wrapper for Tooltip-wrapped children: inline-flex so the child keeps
+ *  its natural size and the span never leaks layout. */
+.anchor {
+  display: inline-flex;
+  min-width: 0;
+}

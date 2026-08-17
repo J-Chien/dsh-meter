@@ -121,7 +121,10 @@ export function apply(ctx: HostContext): void {
         cacheReadTokens: zod.number().int().nonnegative(),
         cacheWriteTokens: zod.number().int().nonnegative(),
         outputTokens: zod.number().int().nonnegative(),
-        cacheHitRate: zod.number(),
+        // Price units are integers by construction (priceTokens floors); a
+        // float here would mean the settings schema let a fractional price
+        // through, so fail the frame loud instead of rendering a bogus cost.
+        cacheHitRate: zod.number().min(0).max(1),
         requestCount: zod.number().int().nonnegative(),
         unpricedRequestCount: zod.number().int().nonnegative(),
         hasPeakConfig: zod.boolean(),
@@ -153,6 +156,11 @@ export function apply(ctx: HostContext): void {
         lastRequestInputTokens: zod.number().int().nonnegative().optional(),
         contextWindow: zod.number().int().positive().optional(),
         maxOutputTokens: zod.number().int().positive().optional(),
+        compactions: zod.object({
+          count: zod.number().int().nonnegative(),
+          lastTime: zod.number().int().nonnegative().optional(),
+          lastShadowedTokens: zod.number().int().nonnegative().optional(),
+        }),
       }) as unknown as zod.ZodType<SessionBillingStats>,
       init: () => ({ header: undefined, stats: EMPTY_STATS }),
       // The fold keeps full history; bound turns by TURN here so every pushed
@@ -166,7 +174,8 @@ export function apply(ctx: HostContext): void {
         return next
       },
       view: state => state.stats,
-      stateVersion: 6,
+      // 7: SessionBillingStats.compactions added (compaction/summary fold).
+      stateVersion: 7,
     })
   }
 
@@ -271,12 +280,9 @@ async function catalog(ctx: HostContext): Promise<{
   }[]
 }> {
   const providers = ctx.llm.listProviders()
-  const rows: {
-    id: string
-    name: string
-    models: { id: string; name: string; capability?: ModelCapability }[]
-  }[] = []
-  for (const provider of providers) {
+  // Providers resolve concurrently (each model inside a provider still
+  // parallel), so a slow adapter cannot serialize the whole editor load.
+  const rows = await Promise.all(providers.map(async provider => {
     let models: { id: string; name: string; capability?: ModelCapability }[] = []
     try {
       const listed = await ctx.llm.listModels(provider.id)
@@ -298,8 +304,8 @@ async function catalog(ctx: HostContext): Promise<{
       // A provider without a listable catalog contributes an empty group.
       models = []
     }
-    rows.push({ id: provider.id, name: provider.name, models })
-  }
+    return { id: provider.id, name: provider.name, models }
+  }))
   return { providers: rows }
 }
 

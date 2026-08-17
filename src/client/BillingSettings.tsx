@@ -21,6 +21,7 @@ import { parsePriceInput, priceToInput, parseKTokensInput, kTokensToInput, forma
 import { consumeLocateModel, LOCATE_EVENT, type LocateModelRequest } from './locate.ts'
 import { BillingLabel } from './BillingLabel.tsx'
 import { NS, type BillingKey } from './locales.ts'
+import './theme.module.css'
 import css from './BillingSettings.module.css'
 
 /** The inject face apply passes to this section. */
@@ -159,6 +160,7 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [saving, setSaving] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
+  const [saveError, setSaveError] = useState<string | undefined>(undefined)
   // All provider groups start collapsed; the first successful load seeds the
   // collapsed set with every provider id (ids are only known after the load).
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
@@ -233,6 +235,7 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
   const save = async (): Promise<void> => {
     if (state.status !== 'ready' || saving) return
     setSaving(true)
+    setSaveError(undefined)
     try {
       const providers: PriceTable['providers'] = {}
       const models: ModelPrice[] = []
@@ -288,6 +291,10 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
       await updatePriceTable({ providers, models })
       setSavedFlash(true)
       setTimeout(() => setSavedFlash(false), 1500)
+    } catch (error) {
+      // Surface the failure next to the save button (the load-time error pane
+      // is not mounted here, so a swallowed error would look like a hang).
+      setSaveError(error instanceof Error ? error.message : String(error))
     } finally {
       setSaving(false)
     }
@@ -314,6 +321,7 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
       <div className={css.head}>
         <h2 className={css.title}>{t('settings.title')}</h2>
         <div className={css.headRight}>
+          {saveError !== undefined ? <span className={css.error}>{t('settings.saveFailed')}: {saveError}</span> : null}
           {savedFlash ? <span className={css.saved}>{t('settings.saved')}</span> : null}
           <button type="button" className={css.save} onClick={() => void save()} disabled={saving}>
             {saving ? t('settings.saving') : t('settings.save')}
@@ -652,8 +660,11 @@ function ModelRow({ model, t, onChange }: {
               {model.capability.contextWindow !== undefined
                 ? `${t('capability.context')} ${formatTokens(model.capability.contextWindow)}`
                 : ''}
+              {model.capability.contextWindow !== undefined && model.capability.maxTokens !== undefined
+                ? ' · '
+                : ''}
               {model.capability.maxTokens !== undefined
-                ? ` · ${t('capability.output')} ${formatTokens(model.capability.maxTokens)}${t('capability.configured')}`
+                ? `${t('capability.output')} ${formatTokens(model.capability.maxTokens)}${t('capability.configured')}`
                 : ''}
             </span>
           ) : null}

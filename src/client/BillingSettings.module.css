@@ -1,3 +1,7 @@
+/* BillingSettings: the price-table editor pane. All tokens resolve through
+   theme.module.css's --billing-* variables (no direct --dsw-* references).
+   Interaction timing constants live in interaction.ts. */
+
 .pane {
   display: flex;
   flex-direction: column;
@@ -14,7 +18,7 @@
 
 .title {
   margin: 0;
-  color: var(--dsw-alias-label-primary);
+  color: var(--billing-text-primary);
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
@@ -27,15 +31,15 @@
 }
 
 .saved {
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--billing-state-business);
   font-size: 12px;
 }
 
 .save {
   padding: 5px 14px;
   border: 0;
-  border-radius: 8px;
-  background: var(--dsw-alias-state-business-primary);
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-state-business);
   color: #fff;
   font-size: 13px;
   line-height: 20px;
@@ -50,15 +54,15 @@
 .empty,
 .modelEmpty {
   padding: 16px;
-  border: 1px dashed var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  color: var(--dsw-alias-label-tertiary);
+  border: 1px dashed var(--billing-border-l2);
+  border-radius: var(--billing-radius-3);
+  color: var(--billing-text-tertiary);
   font-size: 13px;
   text-align: center;
 }
 
 .error {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--billing-state-error);
   font-size: 13px;
 }
 
@@ -67,8 +71,8 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-3);
   background: transparent;
 }
 
@@ -86,7 +90,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--dsw-alias-label-primary);
+  color: var(--billing-text-primary);
   font-size: 14px;
   line-height: 20px;
   font-weight: 600;
@@ -95,8 +99,8 @@
 
 .chevron {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  transition: transform 150ms ease;
+  color: var(--billing-text-tertiary);
+  transition: transform var(--billing-motion-fast) var(--billing-ease);
 }
 
 .chevronOpen {
@@ -111,7 +115,7 @@
 }
 
 .groupId {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 12px;
   font-weight: 400;
 }
@@ -131,7 +135,7 @@
 }
 
 .unitHint {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 11px;
   line-height: 14px;
   white-space: nowrap;
@@ -139,10 +143,10 @@
 
 .select {
   padding: 4px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-sunken);
+  color: var(--billing-text-primary);
   font-size: 12px;
 }
 
@@ -157,10 +161,10 @@
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-left: 3px solid var(--dsw-alias-state-business-tertiary);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-module-platform);
+  border: 1px solid var(--billing-border-l1);
+  border-left: 3px solid var(--billing-state-business-soft);
+  border-radius: var(--billing-radius-3);
+  background: var(--billing-module-bg);
 }
 
 .rowTitle {
@@ -171,10 +175,10 @@
 }
 
 .modelName {
-  font-family: var(--dsw-font-mono);
+  font-family: var(--billing-font-mono);
   font-size: 12px;
   line-height: 16px;
-  color: var(--dsw-alias-label-primary);
+  color: var(--billing-text-primary);
   word-break: break-all;
 }
 
@@ -189,8 +193,8 @@
 /* Real model capability chip (context window / max output) beside the name. */
 .modelCap {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  font-family: var(--dsw-font-mono);
+  color: var(--billing-text-tertiary);
+  font-family: var(--billing-font-mono);
   font-size: 10px;
   line-height: 14px;
   white-space: nowrap;
@@ -218,10 +222,11 @@
   position: relative;
   width: 30px;
   height: 16px;
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-3);
-  border: 1px solid var(--dsw-alias-border-l2);
-  transition: background 150ms ease, border-color 150ms ease;
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-sunken);
+  border: 1px solid var(--billing-border-l2);
+  transition: background var(--billing-motion-fast) var(--billing-ease),
+    border-color var(--billing-motion-fast) var(--billing-ease);
   flex: none;
 }
 
@@ -232,13 +237,14 @@
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--dsw-alias-label-tertiary);
-  transition: transform 150ms ease, background 150ms ease;
+  background: var(--billing-text-tertiary);
+  transition: transform var(--billing-motion-fast) var(--billing-ease),
+    background var(--billing-motion-fast) var(--billing-ease);
 }
 
 .tierSwitchInput:checked + .tierSwitchTrack {
-  background: var(--dsw-alias-state-business-primary);
-  border-color: var(--dsw-alias-state-business-primary);
+  background: var(--billing-state-business);
+  border-color: var(--billing-state-business);
 }
 
 .tierSwitchInput:checked + .tierSwitchTrack .tierSwitchThumb {
@@ -247,7 +253,7 @@
 }
 
 .tierSwitchLabel {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
   font-size: 12px;
 }
 
@@ -261,13 +267,13 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 11px;
   line-height: 14px;
 }
 
 .priceLabel {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 11px;
   line-height: 14px;
 }
@@ -277,10 +283,10 @@
   width: 100%;
   min-width: 0;
   padding: 4px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-panel);
+  color: var(--billing-text-primary);
   font-size: 13px;
 }
 
@@ -289,7 +295,7 @@
   flex-direction: column;
   gap: 8px;
   padding-top: 10px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
+  border-top: 1px solid var(--billing-border-l2);
 }
 
 .peakHead {
@@ -299,23 +305,23 @@
 }
 
 .peakLabel {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
   font-size: 12px;
 }
 
 .addPeriod {
   padding: 2px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-2);
   background: transparent;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
   font-size: 11px;
   cursor: pointer;
 }
 
 .addPeriod:hover {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--billing-text-primary);
+  background: var(--billing-hover-bg);
 }
 
 .period {
@@ -323,9 +329,9 @@
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 1px solid var(--billing-border-l2);
   border-radius: 10px;
-  background: var(--dsw-alias-bg-layer-2);
+  background: var(--billing-surface-panel);
 }
 
 .periodHead {
@@ -343,7 +349,7 @@
   flex-direction: column;
   gap: 6px;
   padding-top: 8px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
+  border-top: 1px solid var(--billing-border-l2);
 }
 
 .removePeriod {
@@ -351,17 +357,17 @@
   height: 24px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
 }
 
 .removePeriod:hover {
-  color: var(--dsw-alias-state-error-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--billing-state-error);
+  background: var(--billing-hover-bg);
 }
 
 /* ── 分段计费（tiered pricing）──
@@ -381,9 +387,9 @@
   flex-direction: column;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 1px solid var(--billing-border-l2);
   border-radius: 10px;
-  background: var(--dsw-alias-bg-layer-2);
+  background: var(--billing-surface-panel);
 }
 
 .tierRangeLine {
@@ -404,7 +410,7 @@
 
 .tierNo {
   flex: none;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
   font-size: 11px;
   line-height: 20px;
   font-weight: 600;
@@ -414,7 +420,7 @@
 
 .rangeLabel {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 10px;
   line-height: 16px;
   white-space: nowrap;
@@ -443,18 +449,18 @@
   width: 52px;
   flex: none;
   padding: 3px 6px;
-  font-family: var(--dsw-font-mono);
+  font-family: var(--billing-font-mono);
   font-size: 12px;
 }
 
 .boundDash {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
 }
 
 .boundUnit {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 10px;
   margin-right: 2px;
 }
@@ -463,9 +469,10 @@
    as the editable inputs, so the two layouts line up. */
 .boundText {
   flex: none;
-  color: var(--dsw-alias-label-secondary);
-  font-family: var(--dsw-font-mono);
+  color: var(--billing-text-secondary);
+  font-family: var(--billing-font-mono);
   font-size: 12px;
   line-height: 20px;
   white-space: nowrap;
 }
+

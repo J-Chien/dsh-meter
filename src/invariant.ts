@@ -18,6 +18,7 @@ export function assertEmptyBillingStats(stats: SessionBillingStats): void {
     || stats.currentModel !== undefined
     || Object.keys(stats.cost).length > 0
     || Object.keys(stats.byPeriod).length > 0
+    || stats.compactions.count !== 0
   ) {
     throw new Error('billing: empty stats must be all-zero')
   }
