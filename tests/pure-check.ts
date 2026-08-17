@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, EMPTY_STATS } from '../src/host/session-stats.ts'
-import { aggregateTurns, estimateCompactionGrowth, estimateCompactionEta } from '../src/shared.ts'
+import { aggregateTurns, completedTurnLevels, estimateCompactionGrowth, estimateCompactionEta } from '../src/shared.ts'
 import type { PriceTable } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
 
@@ -166,6 +166,24 @@ assert.equal(compacted.compactions.lastShadowedTokens, 12_345, 'shadowed token c
 assert.equal(foldBilling(log, table).compactions.count, 0, 'no compaction events → count 0')
 
 console.log('COMPACTION FOLD CHECK PASSED')
+
+// --- completedTurnLevels: in-progress turn excluded, last request wins ---
+const levelRows: Parameters<typeof completedTurnLevels>[0] = [
+  { turn: 1, step: 1, time: 1, inputTokens: 10_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 1, step: 2, time: 2, inputTokens: 15_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 2, step: 1, time: 3, inputTokens: 22_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 3, step: 1, time: 4, inputTokens: 30_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 3, step: 2, time: 5, inputTokens: 31_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+]
+const levelFold = completedTurnLevels(levelRows)
+assert.deepEqual(levelFold.levels, [15_000, 22_000], 'only completed turns (turn 1 last request, turn 2); in-progress turn 3 excluded')
+assert.equal(levelFold.currentTurn, 3, 'current turn reported')
+// A live session's final turn is ALWAYS in progress: rows ending at turn 2
+// still exclude turn 2 (its last request may not be its final one).
+const completeRows = levelRows.slice(0, 3)
+assert.deepEqual(completedTurnLevels(completeRows).levels, [15_000], 'final turn excluded from completed levels')
+
+console.log('TURN LEVELS CHECK PASSED')
 
 // --- compaction ETA: trimmed mean over positive level deltas ---
 // Levels grow ~10K/turn steadily; one light turn (+2K) and one heavy (+20K)

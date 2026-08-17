@@ -219,6 +219,17 @@
 
 ## 10. 迭代记录
 
+### v0.3.11（迷你图改 token 柱 + 对称布局）
+- **迷你图从费用柱改为输入 token 柱**：该区块处于 token 上下文（输入/命中/输出/占用条），费用柱语义突兀；柱高 = 该轮总输入 token，高峰轮暖色标记保留（该轮输入按高峰计价）；区块标签「最近消耗」→「最近输入」。
+- **tooltip 改富信息**：轮次 + token 消耗（输入）+ 费用消耗 + 命中率，一段文案齐备。
+- **左右间距对称**：`.turnsChart` 去掉 `gap` 改 `justify-content: space-between`——首末柱贴边、余量均匀摊入柱间，消除右缘空档。
+
+### v0.3.10（压缩预估消除轮边界跳变 + 迷你图满宽自适应）
+- **预估只用已完成轮次**：新增 `completedTurnLevels`（纯函数，进行中的轮次被排除——其水平随每个请求增长，纳入会在轮边界跳变、轮内漂移）；`ContextBar` 增速取自完成轮次 trimmed mean。
+- **headroom 单调位置**：`max(最近请求输入, 上一完成轮水平)`——缓存命中丰富时请求总输入可能低于历史水平，用 max 防止位置假性回退导致 ETA 反向跳高。
+- **迷你图满宽**：`TurnsBarChart` 从写死 10 轮改为 ResizeObserver 实测容器宽度、按 18px 柱宽 + 3px 间距计算可容纳轮数（至少 4 根、首次测量前 fallback 10），右边不再留白。
+- 新增测试：`TURN LEVELS CHECK`（完成轮提取 + 进行中轮排除语义）。
+
 ### v0.3.9（压缩预估稳定性 + 横轴强调方式）
 - **预估改 trimmed mean**：增速从「最近 5 轮简单平均」改为**最近 10 轮正差分 trimmed mean**（去掉最大最小各一个），单轮偏轻/偏重不再左右预估；<3 个正差分或无余量不显示。纯函数 `estimateCompactionGrowth`/`estimateCompactionEta` 提取到 `shared.ts` 并补单元测试（COMPACTION ETA CHECK）。
 - **横轴强调改到标签**：轮次首请求（`N.1`）不再给柱体加 1px 描边（观感差），改为标签加粗 + 提亮（`font-weight 600` + secondary 色），前导 8px 间距保留。
@@ -366,4 +377,4 @@
 
 ---
 
-*最近更新：v0.3.9（压缩预估改 10 轮 trimmed mean 稳定外推、横轴强调改标签加粗）。*
+*最近更新：v0.3.11（迷你图改输入 token 柱 + space-between 对称布局，tooltip 富信息）。*

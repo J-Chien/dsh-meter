@@ -191,10 +191,43 @@ export const CONTEXT_WARN_THRESHOLD = 0.85
 export const COMPACT_TRIGGER_RATIO = 0.8
 
 /**
+ * Extract per-turn context LEVELS from the request rows, EXCLUDING the
+ * in-progress turn. A turn's level is its LAST request's total input (a
+ * tool-calling turn re-sends the whole context per step, so summing steps
+ * would multi-count). The in-progress turn is excluded because its level
+ * grows with every request until the turn closes — including it makes the
+ * growth series (and any forecast off it) jump at every turn boundary and
+ * drift within a turn.
+ *
+ * `currentTurn` = the turn of the last request row; when undefined the
+ * whole log is complete.
+ */
+export function completedTurnLevels(
+  turns: readonly TurnCost[],
+): { levels: number[]; currentTurn: number | undefined } {
+  const levels: number[] = []
+  let currentTurn: number | undefined
+  let currentLevel = 0
+  for (const row of turns) {
+    if (row.turn !== currentTurn) {
+      if (currentTurn !== undefined) levels.push(currentLevel)
+      currentTurn = row.turn
+      currentLevel = row.inputTokens
+    } else {
+      currentLevel = row.inputTokens // last request wins within the turn
+    }
+  }
+  // The final turn of a LIVE session is always in progress — keep it out of
+  // the levels; the loop above only pushed turns once their successor
+  // appeared, so the tail turn is excluded by construction.
+  return { levels, currentTurn }
+}
+
+/**
  * Stable per-turn context growth: positive level deltas over the last 10
- * turns, trimmed (min & max dropped) before averaging — the TYPICAL turn's
- * growth, not the latest swing. Returns undefined with < 3 positive deltas
- * or no growth.
+ * COMPLETED turns, trimmed (min & max dropped) before averaging — the
+ * TYPICAL turn's growth, not the latest swing. Returns undefined with < 3
+ * positive deltas or no growth.
  */
 export function estimateCompactionGrowth(levels: readonly number[]): number | undefined {
   const recent = levels.slice(-10)

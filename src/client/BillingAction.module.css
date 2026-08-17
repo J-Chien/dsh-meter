@@ -403,11 +403,13 @@
 /* The chart box: a fixed-height area where bars grow upward from the
  * baseline; the turn number sits under each bar on the x-axis. Fixed-width
  * columns, chronological left→right — overflow scrolls horizontally
- * instead of compressing the bars. */
+ * instead of compressing the bars. `justify-content: space-between` makes
+ * the first and last column hug the edges (symmetric), with the slack
+ * spread evenly across the inter-column gaps. */
 .turnsChart {
   display: flex;
   align-items: flex-end;
-  gap: 3px;
+  justify-content: space-between;
   height: 56px;
   min-width: 0;
   padding: 0 2px;

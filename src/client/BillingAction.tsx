@@ -11,7 +11,7 @@ import {
   IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { CONTEXT_WARN_THRESHOLD, EMPTY_STATS, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost } from '../shared.ts'
+import { CONTEXT_WARN_THRESHOLD, EMPTY_STATS, completedTurnLevels, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost } from '../shared.ts'
 import { formatPrice, formatTime, formatTokens } from './format.ts'
 import { getPriceTable, refreshSessionStats } from './billing-api.ts'
 import { requestLocateModel } from './locate.ts'
@@ -506,28 +506,21 @@ function ContextBar({ ratio, t, stats }: {
   const compactions = stats.compactions
   const compacted = compactions !== undefined && compactions.count > 0
 
-  // Forecast (see doc comment above for the model). Per-turn context LEVEL
-  // = the LAST request's total input within each turn; growth = trimmed mean
-  // of positive level deltas over the last 10 turns (shared pure function).
+  // Forecast (see doc comment above for the model). Growth comes from
+  // COMPLETED turns only — the in-progress turn's level grows with every
+  // request, so including it makes the estimate jump at each turn boundary
+  // and drift inside a turn. The position used for headroom is monotone:
+  // max(last request input, last completed turn's level) — a cache-hit-rich
+  // request can report LOWER total input than the completed turn before it,
+  // and letting that shrink the position would make the ETA jump upward.
   let forecast: string | undefined
   const windowTokens = stats.contextWindow
   const lastInput = stats.lastRequestInputTokens
   if (windowTokens !== undefined && lastInput !== undefined && stats.turns.length >= 2) {
-    const levels: number[] = []
-    let currentTurn = -1
-    let currentLevel = 0
-    for (const row of stats.turns) {
-      if (row.turn !== currentTurn) {
-        if (currentTurn !== -1) levels.push(currentLevel)
-        currentTurn = row.turn
-        currentLevel = row.inputTokens
-      } else {
-        currentLevel = row.inputTokens // last request wins within the turn
-      }
-    }
-    levels.push(currentLevel)
+    const { levels } = completedTurnLevels(stats.turns)
+    const position = Math.max(lastInput, levels.length > 0 ? levels[levels.length - 1]! : 0)
     const growth = estimateCompactionGrowth(levels)
-    const eta = estimateCompactionEta(levels, windowTokens, lastInput)
+    const eta = estimateCompactionEta(levels, windowTokens, position)
     if (growth !== undefined && eta !== undefined) {
       forecast = t('card.compactEta')
         .replace('{turns}', String(eta))
@@ -564,24 +557,45 @@ function ContextBar({ ratio, t, stats }: {
   )
 }
 
-/** A compact vertical bar chart of per-turn cost. X-axis is time (oldest
- *  turn left → newest right), bar height is cost. Peak turns use a warm
- *  tint; hover shows the exact figure. Only the most recent few turns fit
- *  the card width. Bars keep a fixed width and the strip scrolls
- *  horizontally when the turns overflow (same rule as the detail panel). */
+/** A compact vertical bar chart of per-turn INPUT TOKENS. X-axis is time
+ *  (oldest left → newest right), bar height = the turn's total input tokens
+ *  (the section sits in the token-usage context — a cost column here would
+ *  be off-language). Peak turns keep a warm tint (their inputs bill at the
+ *  peak rate). Hover shows the full picture: turn, token usage, cost, hit
+ *  rate. Bars keep a fixed width; the chart measures its own width and
+ *  shows as many recent turns as fit — no hardcoded count. */
 function TurnsBarChart({ turns, t }: {
   turns: TurnCost[]
   t: (key: BillingKey) => string
 }) {
   const aggregated = aggregateTurns(turns)
-  const recent = aggregated.slice(-10)
-  const max = Math.max(...recent.map(r => r.cost), 1)
+  // Fit count from the measured strip width: each column is 18px and needs
+  // a 3px breathing gap, so 21px per column; the 4px is the 2×2px strip
+  // padding. space-between spreads the leftover evenly. Falls back to 10
+  // before the first measure lands.
+  const stripRef = useRef<HTMLDivElement>(null)
+  const [fit, setFit] = useState(10)
+  useEffect(() => {
+    const el = stripRef.current
+    if (el === null) return
+    const measure = (): void => {
+      const columns = Math.floor((el.clientWidth - 4) / 21)
+      setFit(Math.max(4, columns))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  const recent = aggregated.slice(-fit)
+  const max = Math.max(...recent.map(r => r.inputTokens), 1)
   // Per-bar tooltip through the shared state — the SAME dwell as the card's
   // buttons (interaction.ts), so the whole billing UI hovers in one rhythm.
+  // Content carries the full turn picture: turn, token usage, cost, hit rate.
   const [hovered, setHovered] = useState<TurnCost | null>(null)
   const [, setTooltipAnchor, tooltip] = useTooltipState({
     label: hovered !== null
-      ? `${t('turn.turn')} ${hovered.turn} · ${formatPrice(hovered.cost, currencySymbol(hovered.currency))} · ${t('turn.hitRate')} ${Math.round(hovered.cacheHitRate * 100)}%`
+      ? `${t('turn.turn')} ${hovered.turn} · ${t('turn.input')} ${formatTokens(hovered.inputTokens)} · ${formatPrice(hovered.cost, currencySymbol(hovered.currency))} · ${t('turn.hitRate')} ${Math.round(hovered.cacheHitRate * 100)}%`
       : '',
     align: 'center',
   })
@@ -591,7 +605,7 @@ function TurnsBarChart({ turns, t }: {
         <span className={css.turnsLabel}>{t('card.turns')}</span>
         <span className={css.turnsCount}>{t('card.turnsCount').replace('{count}', String(aggregated.length))}</span>
       </div>
-      <div className={css.turnsChart}>
+      <div ref={stripRef} className={css.turnsChart}>
         {recent.map((turn, i) => (
           <div
             key={i}
@@ -601,7 +615,7 @@ function TurnsBarChart({ turns, t }: {
           >
             <div
               className={`${css.turnBar}${turn.period === 'peak' ? ` ${css.turnBarPeak}` : ''}`}
-              style={{ height: `${Math.max(4, (turn.cost / max) * 100)}%` }}
+              style={{ height: `${Math.max(4, (turn.inputTokens / max) * 100)}%` }}
             />
             <span className={css.turnNo}>{turn.turn}</span>
           </div>
