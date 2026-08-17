@@ -1,31 +1,31 @@
 /* BillingTurnsPanel: the per-turn consumption detail panel (dimension +
    grouping switches, axis-labeled chart, detail table). CSS-drawn, no chart
-   library. Token bucket colors use the defined semantic tokens only — the
-   previously-used `state-business-secondary` alias does not exist in the
-   design system and rendered blank. */
+   library. All colors resolve through theme.module.css's --billing-*
+   variables; the four token buckets use the defined static palette (readable
+   on both light and dark panels). */
 
 .mask {
   position: fixed;
   inset: 0;
-  z-index: 200;
-  background: var(--dsw-alias-bg-mask-1);
-  backdrop-filter: var(--dsw-mask-blur);
+  z-index: var(--billing-z-mask);
+  background: var(--billing-surface-mask);
+  backdrop-filter: var(--billing-mask-blur);
 }
 
 .panel {
   position: fixed;
-  z-index: 201;
+  z-index: calc(var(--billing-z-mask) + 1);
   display: flex;
   flex-direction: column;
   gap: 14px;
   box-sizing: border-box;
   max-height: 70vh;
   padding: 14px 16px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 1px solid var(--billing-border-l2);
   border-radius: 14px;
-  background: var(--dsw-alias-bg-layer-2);
-  box-shadow: var(--dsw-shadow-lv3);
-  color: var(--dsw-alias-label-primary);
+  background: var(--billing-surface-panel);
+  box-shadow: var(--billing-shadow);
+  color: var(--billing-text-primary);
 }
 
 .head {
@@ -51,18 +51,18 @@
 .refresh {
   flex: none;
   padding: 2px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
   font-size: 11px;
   line-height: 16px;
   cursor: pointer;
 }
 
 .refresh:hover {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--billing-text-primary);
+  background: var(--billing-hover-bg);
 }
 
 .refresh:disabled {
@@ -78,22 +78,22 @@
   height: 24px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
 }
 
 .close:hover {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--billing-text-primary);
+  background: var(--billing-hover-bg);
 }
 
 .empty {
   padding: 24px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 13px;
   text-align: center;
 }
@@ -113,7 +113,7 @@
 }
 
 .sectionTitle {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
   font-size: 12px;
   line-height: 18px;
 }
@@ -127,24 +127,24 @@
 .dimSwitch {
   display: inline-flex;
   padding: 2px;
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-3);
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-sunken);
 }
 
 .dimBtn {
   padding: 2px 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 11px;
   line-height: 16px;
   cursor: pointer;
 }
 
 .dimBtnActive {
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
+  background: var(--billing-surface-raised);
+  color: var(--billing-text-primary);
 }
 
 /* Chart + value axis: the axis column is fixed-width on the left, the chart
@@ -172,8 +172,8 @@
 }
 
 .axisTick {
-  color: var(--dsw-alias-label-tertiary);
-  font-family: var(--dsw-font-mono);
+  color: var(--billing-text-tertiary);
+  font-family: var(--billing-font-mono);
   font-variant-numeric: tabular-nums;
   font-size: 9px;
   line-height: 11px;
@@ -189,15 +189,18 @@
   min-width: 0;
   height: 100%;
   padding: 0 2px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  border-bottom: 1px solid var(--billing-border-l2);
 }
 
+/* Fixed-width columns, chronological left→right: bars never compress to
+ * fit, the chart column scrolls horizontally instead (see .scrollX).
+ * 24px fits a 3-4 digit numeric label (`12` / `12.3`) uncut at 9px mono. */
 .barCol {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  flex: 1 0 18px;
+  flex: 0 0 24px;
   min-width: 0;
   height: 100%;
   gap: 2px;
@@ -207,32 +210,33 @@
   width: 100%;
   max-width: 22px;
   border-radius: 3px 3px 0 0;
-  background: var(--dsw-static-deepseek-400);
+  background: var(--billing-chart-uncached);
 }
 
 .barPeak {
-  background: var(--dsw-static-amber-400);
+  background: var(--billing-chart-peak);
 }
 
 .barUnpriced {
   background: repeating-linear-gradient(
     45deg,
     transparent 0 3px,
-    var(--dsw-alias-border-l2) 3px 5px
+    var(--billing-border-l2) 3px 5px
   );
 }
 
 .barLabel {
-  color: var(--dsw-alias-label-tertiary);
-  font-family: var(--dsw-font-mono);
+  color: var(--billing-text-tertiary);
+  font-family: var(--billing-font-mono);
   font-size: 9px;
   line-height: 12px;
   white-space: nowrap;
 }
 
 /* Token stacked chart: uncached input / cache read / cache write / output.
-   Colors are the defined state tokens (success 3-step for input layers,
-   warn for cache write, business for output) — distinct in both themes. */
+   The three input buckets are a blue lightness gradient (readable on both the
+   light and dark panel), output is a distinct warm hue so the four stacked
+   segments never blur together. */
 .stackChart {
   display: flex;
   align-items: flex-end;
@@ -241,7 +245,7 @@
   min-width: 0;
   height: 100%;
   padding: 0 2px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  border-bottom: 1px solid var(--billing-border-l2);
 }
 
 .stackCol {
@@ -249,10 +253,28 @@
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  flex: 1 0 18px;
+  flex: 0 0 24px;
   min-width: 0;
   height: 100%;
   gap: 2px;
+}
+
+/* Dense (per-request) mode: half-width bars, macro trend view — the axis
+ * reads as a timeline, per-bar IDs stay in the tooltip/table. */
+.dense .barCol,
+.dense .stackCol {
+  flex-basis: 12px;
+}
+
+/* Turn boundary in dense mode: the FIRST request of a turn gets a leading
+ * gap (visual grouping); its axis label is emphasized instead of the bar. */
+.dense .turnStart {
+  margin-left: 8px;
+}
+
+.dense .turnStart .barLabel {
+  font-weight: 600;
+  color: var(--billing-text-secondary);
 }
 
 .stackWrap {
@@ -265,35 +287,32 @@
   gap: 1px;
 }
 
-/* Token stacked chart: uncached input / cache read / cache write / output.
-   The three input buckets are a blue lightness gradient (readable on both the
-   light and dark panel), output is a distinct warm hue so the four stacked
-   segments never blur together. Colors are static (panel bg differs between
-   themes) and chosen for contrast on both. */
 .stackUncached {
   width: 100%;
   border-radius: 3px 3px 0 0;
-  background: var(--dsw-static-deepseek-400);
+  background: var(--billing-chart-uncached);
 }
 
 .stackCacheRead {
   width: 100%;
-  background: var(--dsw-static-deepseek-200);
+  background: var(--billing-chart-cache-read);
 }
 
 .stackCacheWrite {
   width: 100%;
-  background: var(--dsw-static-deepseek-500);
+  background: var(--billing-chart-cache-write);
 }
 
 .stackOutput {
   width: 100%;
-  background: var(--dsw-static-amber-400);
+  background: var(--billing-chart-output);
 }
 
+/* The chart column scrolls while the value axis stays pinned. */
 .scrollX {
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: thin;
 }
 
 .legend {
@@ -307,7 +326,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 10px;
   line-height: 14px;
 }
@@ -319,36 +338,36 @@
 }
 
 .legendOffPeak {
-  background: var(--dsw-static-deepseek-400);
+  background: var(--billing-chart-uncached);
 }
 
 .legendPeak {
-  background: var(--dsw-static-amber-400);
+  background: var(--billing-chart-peak);
 }
 
 .legendUnpriced {
-  background: repeating-linear-gradient(45deg, transparent 0 2px, var(--dsw-alias-border-l2) 2px 3px);
+  background: repeating-linear-gradient(45deg, transparent 0 2px, var(--billing-border-l2) 2px 3px);
 }
 
 .legendUncached {
-  background: var(--dsw-static-deepseek-400);
+  background: var(--billing-chart-uncached);
 }
 
 .legendCacheRead {
-  background: var(--dsw-static-deepseek-200);
+  background: var(--billing-chart-cache-read);
 }
 
 .legendCacheWrite {
-  background: var(--dsw-static-deepseek-500);
+  background: var(--billing-chart-cache-write);
 }
 
 .legendOutput {
-  background: var(--dsw-static-amber-400);
+  background: var(--billing-chart-output);
 }
 
 /* Disjoint-bucket explanation under the token chart. */
 .bucketNote {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 10px;
   line-height: 14px;
 }
@@ -358,8 +377,8 @@
   min-width: 0;
   max-height: 200px;
   overflow: auto;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-2);
 }
 
 .table {
@@ -373,8 +392,8 @@
   position: sticky;
   top: 0;
   padding: 6px 8px;
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-tertiary);
+  background: var(--billing-surface-sunken);
+  color: var(--billing-text-tertiary);
   font-weight: 500;
   text-align: left;
   white-space: nowrap;
@@ -382,14 +401,14 @@
 
 .table td {
   padding: 5px 8px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
-  color: var(--dsw-alias-label-secondary);
+  border-top: 1px solid var(--billing-border-l1);
+  color: var(--billing-text-secondary);
   white-space: nowrap;
 }
 
 .tdNum,
 .tdTurn {
-  font-family: var(--dsw-font-mono);
+  font-family: var(--billing-font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -402,7 +421,7 @@
 }
 
 .tdPeriodPeak {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--billing-state-error);
 }
 
 /* Collapsible turn-group header rows in the "按请求" view. */
@@ -411,15 +430,15 @@
 }
 
 .groupHead:hover td {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: var(--billing-hover-bg);
 }
 
 .groupChevron {
   display: inline-block;
   margin-right: 4px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 10px;
-  transition: transform 150ms ease;
+  transition: transform var(--billing-motion-fast) var(--billing-ease);
   transform: rotate(0deg);
 }
 
@@ -429,7 +448,7 @@
 
 .groupCount {
   margin-left: 6px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 10px;
 }
 
@@ -437,8 +456,9 @@
   display: inline-block;
   padding: 0 5px;
   border-radius: 4px;
-  color: var(--dsw-alias-state-warn-label);
-  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--billing-state-warn-label);
+  background: var(--billing-state-warn-bg);
   font-size: 10px;
   line-height: 14px;
 }
+

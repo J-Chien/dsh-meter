@@ -187,8 +187,60 @@ export function aggregateTurns(turns: readonly TurnCost[]): TurnSummary[] {
 export const RECENT_TURNS_CAP = 50
 /** Context-usage ratio above which the card warns "near limit". */
 export const CONTEXT_WARN_THRESHOLD = 0.85
-/** Single-request input vs window ratio that triggers a per-request hint. */
-export const SINGLE_TURN_WARN_RATIO = 0.3
+/** Default compaction trigger ratio (compaction-basic thresholdRatio). */
+export const COMPACT_TRIGGER_RATIO = 0.8
+
+/**
+ * Stable per-turn context growth: positive level deltas over the last 10
+ * turns, trimmed (min & max dropped) before averaging — the TYPICAL turn's
+ * growth, not the latest swing. Returns undefined with < 3 positive deltas
+ * or no growth.
+ */
+export function estimateCompactionGrowth(levels: readonly number[]): number | undefined {
+  const recent = levels.slice(-10)
+  const deltas: number[] = []
+  for (let i = 1; i < recent.length; i += 1) {
+    const delta = recent[i]! - recent[i - 1]!
+    if (delta > 0) deltas.push(delta)
+  }
+  if (deltas.length < 3) return undefined
+  const sorted = [...deltas].sort((a, b) => a - b)
+  const trimmed = sorted.slice(1, -1)
+  const growth = trimmed.reduce((acc, d) => acc + d, 0) / trimmed.length
+  return growth > 0 ? growth : undefined
+}
+
+/**
+ * Estimate how many turns remain until the harness auto-compacts, from the
+ * per-turn context LEVELS (each turn's LAST request total input, in log
+ * order) — see {@link estimateCompactionGrowth} for the stability model.
+ * Returns undefined when growth is unavailable or no headroom remains below
+ * the trigger line.
+ */
+export function estimateCompactionEta(
+  levels: readonly number[],
+  contextWindow: number,
+  lastInput: number,
+): number | undefined {
+  const growth = estimateCompactionGrowth(levels)
+  if (growth === undefined) return undefined
+  const headroom = contextWindow * COMPACT_TRIGGER_RATIO - lastInput
+  if (headroom <= 0) return undefined
+  return Math.max(1, Math.ceil(headroom / growth))
+}
+
+/** Compaction history folded from `compaction/summary` events (log-only,
+ *  appended by the harness compaction seam). `shadowedTokenCount` is the
+ *  exact heuristic price of the replaced range, so the count is a real
+ *  observable — no estimation on our side. */
+export interface CompactionStats {
+  /** Number of successful compactions this session. */
+  count: number
+  /** Wall-clock time of the most recent compaction. */
+  lastTime?: number
+  /** Shadowed tokens (heuristic price) of the most recent compaction. */
+  lastShadowedTokens?: number
+}
 
 /** Per-session billing stats folded from the log. */
 export interface SessionBillingStats {
@@ -234,6 +286,10 @@ export interface SessionBillingStats {
   contextWindow?: number
   /** Most recent request/header config.maxTokens (effective output cap). */
   maxOutputTokens?: number
+  /** Compaction history (count + last compaction facts). Drives the
+   *  forecast strip on the card: the 80% trigger line, the last-compaction
+   *  note, and the "N turns until compaction" estimate. */
+  compactions: CompactionStats
 }
 
 /**
@@ -267,10 +323,12 @@ export const EMPTY_STATS: SessionBillingStats = (() => {
     cost: {},
     byPeriod: {},
     turns: [],
+    compactions: { count: 0 },
   }
   Object.freeze(stats.peakModels)
   Object.freeze(stats.cost)
   Object.freeze(stats.byPeriod)
   Object.freeze(stats.turns)
+  Object.freeze(stats.compactions)
   return Object.freeze(stats)
 })()

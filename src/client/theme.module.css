@@ -1,0 +1,79 @@
+/**
+ * theme.module.css — the billing design-token layer.
+ *
+ * Every surface in this plugin resolves through `--billing-*` variables.
+ * Component CSS must NOT reference `--dsw-*` directly: when a token moves
+ * or a color needs to change, only this file is touched.
+ *
+ * WHY `body` AND NOT `:root`: the dsh theme defines `--dsw-*` ON `body`
+ * (light values on `body`, dark values on `body[data-ds-dark-theme]` — see
+ * dsh-client-ui-theme/lib/styles/design-platform.css). CSS custom-property
+ * fallbacks resolve AT DECLARATION SITE, and `:root` (<html>) is NOT a
+ * descendant of `body` — so a `:root` token layer would read NONE of the
+ * theme values and freeze every alias to its light fallback (this is
+ * exactly the bug that broke dark mode here). Declaring on `body` keeps
+ * the layer inside the theme scope: `var(--dsw-*)` resolves live and
+ * follows `body[data-ds-dark-theme]` switching. The plugin's portaled
+ * surfaces attach under `document.body`, so they inherit these variables
+ * in both themes.
+ *
+ * Z-INDEX / RADIUS / MOTION are theme-independent and stay on `:root`;
+ * everything that resolves a `--dsw-*` value lives on `body`.
+ */
+
+/* ── Theme-independent constants (no --dsw-* references) ─────────────── */
+:root {
+  --billing-z-card: 100;
+  --billing-z-mask: 200;
+  --billing-z-tooltip: 300;
+  --billing-radius-1: 6px;
+  --billing-radius-2: 8px;
+  --billing-radius-3: 12px;
+  --billing-ease: cubic-bezier(0.2, 0, 0, 1);
+  --billing-motion-fast: 120ms;
+  --billing-motion-medium: 160ms;
+  --billing-motion-slow: 240ms;
+}
+
+/* ── Theme-dependent aliases (resolve --dsw-* on body, live per theme) ── */
+body {
+  --billing-surface-float: var(--dsw-specific-menu);
+  --billing-surface-panel: var(--dsw-alias-bg-layer-2);
+  --billing-surface-sunken: var(--dsw-alias-bg-layer-3);
+  --billing-surface-raised: var(--dsw-alias-bg-layer-1);
+  --billing-surface-mask: var(--dsw-alias-bg-mask-1);
+  --billing-mask-blur: var(--dsw-mask-blur);
+
+  --billing-border-l1: var(--dsw-alias-border-l1);
+  --billing-border-l2: var(--dsw-alias-border-l2);
+
+  --billing-text-primary: var(--dsw-alias-label-primary);
+  --billing-text-secondary: var(--dsw-alias-label-secondary);
+  --billing-text-tertiary: var(--dsw-alias-label-tertiary);
+  /* The dsh theme currently has no --dsw-font-mono; the fallback keeps the
+   * numeric face stable until one lands upstream. */
+  --billing-font-mono: var(--dsw-font-mono, ui-monospace, 'SF Mono', monospace);
+
+  --billing-hover-bg: var(--dsw-alias-interactive-bg-hover);
+  --billing-hover-danger-bg: var(--dsw-alias-interactive-bg-hover-danger);
+  --billing-tag-bg: var(--dsw-alias-markdown-tag);
+  --billing-module-bg: var(--dsw-alias-bg-module-platform);
+  --billing-shadow: var(--dsw-shadow-lv3);
+
+  --billing-state-success: var(--dsw-alias-state-success-primary);
+  --billing-state-warn: var(--dsw-alias-state-warn-primary);
+  --billing-state-warn-label: var(--dsw-alias-state-warn-label);
+  --billing-state-warn-bg: var(--dsw-alias-state-warn-tertiary);
+  --billing-state-error: var(--dsw-alias-state-error-primary);
+  --billing-state-business: var(--dsw-alias-state-business-primary);
+  --billing-state-business-soft: var(--dsw-alias-state-business-tertiary);
+
+  --billing-chart-uncached: var(--dsw-static-deepseek-400);
+  --billing-chart-cache-read: var(--dsw-static-deepseek-200);
+  --billing-chart-cache-write: var(--dsw-static-deepseek-500);
+  --billing-chart-output: var(--dsw-static-amber-400);
+  --billing-chart-peak: var(--dsw-static-amber-400);
+  --billing-chart-neutral: var(--dsw-alias-label-tertiary);
+  --billing-chart-accent: var(--dsw-alias-label-primary);
+}
+

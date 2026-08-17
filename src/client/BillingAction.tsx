@@ -11,14 +11,17 @@ import {
   IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { CONTEXT_WARN_THRESHOLD, EMPTY_STATS, inPeakWindow, SINGLE_TURN_WARN_RATIO, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost } from '../shared.ts'
-import { formatPrice, formatTokens } from './format.ts'
+import { CONTEXT_WARN_THRESHOLD, EMPTY_STATS, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost } from '../shared.ts'
+import { formatPrice, formatTime, formatTokens } from './format.ts'
 import { getPriceTable, refreshSessionStats } from './billing-api.ts'
 import { requestLocateModel } from './locate.ts'
 import type {} from './types.ts'
 import { BillingLabel } from './BillingLabel.tsx'
 import { NS, type BillingKey } from './locales.ts'
 import { BillingTurnsPanel } from './BillingTurnsPanel.tsx'
+import { CLICK_DELAY_MS, HOVER_CLOSE_MS, HOVER_OPEN_MS } from './interaction.ts'
+import { Tooltip, useTooltipState } from './Tooltip.tsx'
+import './theme.module.css'
 import css from './BillingAction.module.css'
 
 /** The inject face apply passes to this component. */
@@ -145,7 +148,6 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
           </button>
         )}
         content={card}
-        t={t}
       />
       {turnsOpen ? (
         <BillingTurnsPanel sessionId={String(sessionId)} stats={stats} t={t} onClose={() => setTurnsOpen(false)} />
@@ -158,24 +160,38 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
  * A hover-or-click popover over the trigger. Opens on pointer rest (delayed)
  * or click (pinned); a pinned card stays open until an outside click or
  * Escape. The card is portaled and fixed-positioned beside the trigger.
+ *
+ * Timing contract (src/client/interaction.ts — the plugin-wide source):
+ *  - pointer rests HOVER_OPEN_MS on the trigger → card opens (hover mode)
+ *  - pointer leaves trigger + card + bridge for HOVER_CLOSE_MS → card closes
+ *  - a click within CLICK_DELAY_MS of pointer-down cancels the hover open
+ *    and pins the card instead (click pins, never flicker-opens)
+ *
+ * The portaled card sits 8px below the trigger, so BOTH the card and an
+ * invisible bridge rect (trigger.bottom → card.top) participate in the hover
+ * surface: crossing the gap keeps the card open (this was a dead zone where
+ * the card would close before the pointer reached it).
  */
-function BillingPopover({ renderTrigger, content, t }: {
+function BillingPopover({ renderTrigger, content }: {
   renderTrigger: (open: boolean) => ReactNode
   content: ReactNode
-  t: (key: BillingKey) => string
 }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
+  const bridgeRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const graceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pointerDownAt = useRef<number | null>(null)
+  // Trigger bottom (for bridge placement), captured while placing the card.
+  const triggerBottom = useRef<number | null>(null)
 
   const close = useCallback(() => {
     setPinned(false)
     setOpen(false)
   }, [])
-  const graceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const clearHoverTimer = () => {
     if (hoverTimer.current !== null) {
@@ -189,6 +205,12 @@ function BillingPopover({ renderTrigger, content, t }: {
       graceTimer.current = null
     }
   }
+  // Both cards and tooltips share the same open/close dwell, so the whole
+  // billing UI feels like one surface.
+  const cancelHoverOpen = (): void => {
+    clearHoverTimer()
+    clearGraceTimer()
+  }
 
   // Fixed-position from the trigger rect; track while open.
   useLayoutEffect(() => {
@@ -197,6 +219,7 @@ function BillingPopover({ renderTrigger, content, t }: {
       const wrapper = rootRef.current
       if (wrapper === null) return
       const r = wrapper.getBoundingClientRect()
+      triggerBottom.current = r.bottom
       const h = cardRef.current?.offsetHeight ?? 0
       const top = r.bottom + 8 + h > window.innerHeight - 8 ? Math.max(8, window.innerHeight - h - 8) : r.bottom + 8
       setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - 320)), top })
@@ -210,11 +233,16 @@ function BillingPopover({ renderTrigger, content, t }: {
     }
   }, [open])
 
-  // Outside click closes a pinned card; Escape closes any card.
+  // Outside click closes a pinned card; Escape closes any card. The bridge
+  // counts as inside: a pointerdown in the trigger↔card gap must not close
+  // a pinned card (the bridge swallows that click for hover tracking).
   useEffect(() => {
     if (!open) return
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target) && !cardRef.current?.contains(event.target)) {
+      if (event.target instanceof Node
+        && !rootRef.current?.contains(event.target)
+        && !cardRef.current?.contains(event.target)
+        && !bridgeRef.current?.contains(event.target)) {
         close()
       }
     }
@@ -227,12 +255,49 @@ function BillingPopover({ renderTrigger, content, t }: {
     }
   }, [open, close])
 
-  useEffect(() => () => { clearHoverTimer(); clearGraceTimer() }, [])
+  useEffect(() => () => { cancelHoverOpen() }, [])
+
+  // The hover surface: trigger + card + the bridge between them. Each side
+  // resets the grace timer on enter, so crossing the gap never counts as a
+  // leave; the timer only fires after leaving ALL three.
+  const cancelLeave = (): void => {
+    clearHoverTimer()
+    clearGraceTimer()
+  }
+  const scheduleLeave = (): void => {
+    if (open && !pinned) {
+      graceTimer.current = setTimeout(() => { close() }, HOVER_CLOSE_MS)
+    }
+  }
 
   const card = open && pos !== null && createPortal(
-    <div ref={cardRef} className={css.card} style={{ left: pos.left, top: pos.top }}>
+    <div
+      ref={cardRef}
+      className={css.card}
+      style={{ left: pos.left, top: pos.top }}
+      onPointerEnter={cancelLeave}
+      onPointerLeave={scheduleLeave}
+    >
       {content}
     </div>,
+    document.body,
+  )
+
+  // The bridge rect only exists while the card is open; it bridges the gap
+  // the pointer must cross between trigger bottom and card top (above the
+  // card when the card flipped up, below it otherwise).
+  const bridge = open && pos !== null && createPortal(
+    <div
+      ref={bridgeRef}
+      className={css.cardBridge}
+      style={{
+        left: pos.left,
+        top: (triggerBottom.current ?? pos.top) < pos.top ? pos.top - 12 : (triggerBottom.current ?? pos.top),
+        width: 320,
+      }}
+      onPointerEnter={cancelLeave}
+      onPointerLeave={scheduleLeave}
+    />,
     document.body,
   )
 
@@ -244,19 +309,24 @@ function BillingPopover({ renderTrigger, content, t }: {
         clearGraceTimer()
         if (open) return
         clearHoverTimer()
-        hoverTimer.current = setTimeout(() => { setOpen(true) }, 350)
+        hoverTimer.current = setTimeout(() => { setOpen(true) }, HOVER_OPEN_MS)
       }}
       onPointerLeave={() => {
         clearHoverTimer()
-        if (open && !pinned) {
-          graceTimer.current = setTimeout(() => { close() }, 200)
-        }
+        scheduleLeave()
       }}
+      onPointerDown={() => { pointerDownAt.current = Date.now() }}
     >
       <span
         className={css.triggerWrap}
         onClick={(e) => {
           e.stopPropagation()
+          // A click right after pointer-down cancels the pending hover open:
+          // the user wants a pinned card, not a hover flicker.
+          if (pointerDownAt.current !== null && Date.now() - pointerDownAt.current <= CLICK_DELAY_MS) {
+            cancelHoverOpen()
+          }
+          pointerDownAt.current = null
           if (pinned) { close(); return }
           setPinned(true)
           setOpen(true)
@@ -265,6 +335,7 @@ function BillingPopover({ renderTrigger, content, t }: {
         {renderTrigger(open)}
       </span>
       {card}
+      {bridge}
     </div>
   )
 }
@@ -277,8 +348,6 @@ function BillingCard({ stats, t, refreshing, onRefresh, onDetail }: {
   onRefresh: () => void
   onDetail: () => void
 }) {
-  const hitRate = Math.round(stats.cacheHitRate * 100)
-  const currencies = Object.keys(stats.cost)
   const turns = stats.turns ?? []
   const contextRatio = stats.contextWindow !== undefined && stats.lastRequestInputTokens !== undefined
     && stats.contextWindow > 0
@@ -289,83 +358,138 @@ function BillingCard({ stats, t, refreshing, onRefresh, onDetail }: {
       <div className={css.cardHead}>
         <div className={css.titleGroup}>
           <span className={css.cardTitle}>{t('card.title')}</span>
-          <button
-            type="button"
-            className={css.refresh}
-            aria-label={t('refresh.aria')}
-            title={t('refresh.title')}
-            disabled={refreshing}
-            onClick={onRefresh}
-          >
-            <IconRefreshOutline16 size={12} />
-          </button>
+          <span className={css.titleSub}>{t('card.titleSub')}</span>
         </div>
         <div className={css.headActions}>
-          <button
-            type="button"
-            className={css.detail}
-            aria-label={t('card.detail.aria')}
-            title={t('card.detail')}
-            onClick={onDetail}
-          >
-            {t('card.detail')}
-          </button>
-          <button
-            type="button"
-            className={css.settings}
-            aria-label={t('settings.open')}
-            title={t('settings.open')}
-            onClick={() => { openBillingSettings(t, stats.currentModel) }}
-          >
-            <IconSettingsOutline14 />
-          </button>
+          {/* All three share the plugin-wide Tooltip dwell (interaction.ts), so
+           *  button hints and chart hovers feel like one system. */}
+          <Tooltip label={t('refresh.title')}>
+            <button
+              type="button"
+              className={css.refresh}
+              aria-label={t('refresh.aria')}
+              disabled={refreshing}
+              onClick={onRefresh}
+            >
+              <IconRefreshOutline16 size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip label={t('card.detail.aria')}>
+            <button
+              type="button"
+              className={css.detail}
+              aria-label={t('card.detail.aria')}
+              onClick={onDetail}
+            >
+              {t('card.detail')}
+            </button>
+          </Tooltip>
+          <Tooltip label={t('settings.open.aria')}>
+            <button
+              type="button"
+              className={css.settings}
+              aria-label={t('settings.open.aria')}
+              onClick={() => { openBillingSettings(t, stats.currentModel) }}
+            >
+              <IconSettingsOutline14 />
+            </button>
+          </Tooltip>
         </div>
       </div>
-      {stats.currentModel !== undefined
-        ? (
-          <div className={css.modelLine}>
-            <span className={css.modelProvider}>{stats.currentModel.provider}</span>
-            <span className={css.modelSlash}>/</span>
-            <span className={css.modelName}>{stats.currentModel.model}</span>
-            {stats.currentModel.reasoningEffort !== undefined
-              ? <span className={css.modelEffort}>{stats.currentModel.reasoningEffort}</span>
-              : null}
-          </div>
-        )
-        : null}
-      {contextRatio !== undefined ? (
-        <ContextBar ratio={contextRatio} t={t} stats={stats} />
-      ) : null}
-      <dl className={css.grid}>
-        <dt><BillingLabel label={t('row.input')} hint={t('row.cacheHit')} /></dt><dd>{formatTokens(stats.cacheReadTokens)}</dd>
-        <dt><BillingLabel label={t('row.input')} hint={t('row.cacheMiss')} /></dt><dd>{formatTokens(stats.uncachedInputTokens)}</dd>
-        {stats.cacheWriteTokens > 0
-          ? <><dt>{t('row.cacheWrite')}</dt><dd>{formatTokens(stats.cacheWriteTokens)}</dd></>
+
+      <div className={css.body}>
+        {stats.currentModel !== undefined
+          ? (
+            <div className={css.modelLine}>
+              <span className={css.modelProvider}>{stats.currentModel.provider}</span>
+              <span className={css.modelSlash}>/</span>
+              <span className={css.modelName}>{stats.currentModel.model}</span>
+              {stats.currentModel.reasoningEffort !== undefined
+                ? <span className={css.modelEffort}>{stats.currentModel.reasoningEffort}</span>
+                : null}
+            </div>
+          )
           : null}
-        <dt>{t('row.output')}</dt><dd>{formatTokens(stats.outputTokens)}</dd>
-        <dt>{t('row.cacheHitRate')}</dt><dd>{`${hitRate}%`}</dd>
-      </dl>
 
-      {currencies.length > 0
-        ? (
-          <div className={css.costBlock}>
-            {currencies.map(currency => (
-              <CostRows key={currency} stats={stats} currency={currency} t={t} />
-            ))}
-          </div>
-        )
-        : null}
+        {/* Hero figures first: the two numbers that matter most. */}
+        <MetricGrid stats={stats} t={t} />
 
-      {turns.length > 0 ? (
-        <TurnsMiniChart turns={turns} t={t} />
-      ) : null}
+        {/* Token detail: no duplicate hit-rate / total rows — those live
+         *  in the hero. The peak/off-peak split is the only extra here,
+         *  and only when the session actually configures peak windows. */}
+        <div className={css.tokensCard}>
+          <dl className={css.grid}>
+            <dt><BillingLabel label={t('row.input')} hint={t('row.cacheHit')} hintInline /></dt><dd>{formatTokens(stats.cacheReadTokens)}</dd>
+            <dt><BillingLabel label={t('row.input')} hint={t('row.cacheMiss')} hintInline /></dt><dd>{formatTokens(stats.uncachedInputTokens)}</dd>
+            {stats.cacheWriteTokens > 0
+              ? <><dt>{t('row.cacheWrite')}</dt><dd>{formatTokens(stats.cacheWriteTokens)}</dd></>
+              : null}
+            <dt>{t('row.output')}</dt><dd>{formatTokens(stats.outputTokens)}</dd>
+          </dl>
+
+          {stats.hasPeakConfig ? (
+            <PeriodSplit stats={stats} t={t} />
+          ) : null}
+        </div>
+
+        {turns.length > 0 ? (
+          <TurnsBarChart turns={turns} t={t} />
+        ) : null}
+
+        {contextRatio !== undefined ? (
+          <ContextBar ratio={contextRatio} t={t} stats={stats} />
+        ) : null}
+      </div>
     </div>
   )
 }
 
-/** The context-usage bar: the most recent request's total input over the
- *  model's context window (real, folded from the log). Hidden when either
- *  value is absent — no estimate. */
+/** The two hero figures: total cost + cache hit rate. Type-driven, no boxes.
+ *  The hit rate picks up a quiet success tint only at a genuinely high rate;
+ *  otherwise it stays on the neutral label ladder. */
+function MetricGrid({ stats, t }: {
+  stats: SessionBillingStats
+  t: (key: BillingKey) => string
+}) {
+  const hitRate = Math.round(stats.cacheHitRate * 100)
+  const currencies = Object.keys(stats.cost)
+  const totalText = currencies.length === 0
+    ? formatPrice(0, '¥')
+    : currencies.map(c => formatPrice(stats.cost[c] ?? 0, currencySymbol(c))).join(' + ')
+  const hitHigh = hitRate >= 70
+  return (
+    <div className={css.metricGrid}>
+      <div className={css.metric}>
+        <span className={css.metricLabel}>{t('row.cost')}</span>
+        <span className={css.metricValue}>{totalText}</span>
+      </div>
+      <div className={css.metric}>
+        <span className={css.metricLabel}>{t('row.cacheHitRate')}</span>
+        <span className={`${css.metricValue}${hitHigh ? ` ${css.metricHitHigh}` : ''}`}>{`${hitRate}%`}</span>
+      </div>
+    </div>
+  )
+}
+
+/** The context bar: the most recent request's total input over the model's
+ *  advertised context window. NOTE the window is the provider's INPUT+OUTPUT
+ *  combined limit (harness RequestContext.contextWindow), so the ratio is
+ *  'input vs total window', not a pure input-occupancy number. Hidden when
+ *  either value is absent — no estimate.
+ *
+ *  The trigger tick marks compaction-basic's DEFAULT thresholdRatio (0.8 ×
+ *  contextWindow). It is NOT read from the host's live config: that value is
+ *  private cordis patch configuration (no settings namespace, no runtime
+ *  face), so a profile overriding it would make the tick approximate. We
+ *  keep the tick and say "default".
+ *
+ *  Forecast model: per-turn NET input growth = difference between each
+ *  turn's total input and the previous turn's (a turn's input repeats the
+ *  whole history, so the LEVEL is useless — only the DELTA is growth).
+ *  Deltas <= 0 are dropped (compaction resets the level). Over the last 10
+ *  turns, the trimmed mean of positive deltas (min & max excluded) is the
+ *  stable growth rate; ETA = headroom / that rate. Still rough: the harness
+ *  meters the whole surface estimate; we only see real usage. */
 function ContextBar({ ratio, t, stats }: {
   ratio: number
   t: (key: BillingKey) => string
@@ -373,83 +497,136 @@ function ContextBar({ ratio, t, stats }: {
 }) {
   const pct = Math.min(100, Math.round(ratio * 100))
   const near = ratio >= CONTEXT_WARN_THRESHOLD
-  const singleTurnBig = ratio >= SINGLE_TURN_WARN_RATIO
   const windowK = stats.contextWindow !== undefined ? formatTokens(stats.contextWindow) : ''
   const usedK = stats.lastRequestInputTokens !== undefined ? formatTokens(stats.lastRequestInputTokens) : ''
+  const capText = stats.maxOutputTokens !== undefined
+    ? ` · ${t('capability.output')} ${formatTokens(stats.maxOutputTokens)}`
+    : ''
+  const usageText = `${usedK} / ${windowK}${capText}`
+  const compactions = stats.compactions
+  const compacted = compactions !== undefined && compactions.count > 0
+
+  // Forecast (see doc comment above for the model). Per-turn context LEVEL
+  // = the LAST request's total input within each turn; growth = trimmed mean
+  // of positive level deltas over the last 10 turns (shared pure function).
+  let forecast: string | undefined
+  const windowTokens = stats.contextWindow
+  const lastInput = stats.lastRequestInputTokens
+  if (windowTokens !== undefined && lastInput !== undefined && stats.turns.length >= 2) {
+    const levels: number[] = []
+    let currentTurn = -1
+    let currentLevel = 0
+    for (const row of stats.turns) {
+      if (row.turn !== currentTurn) {
+        if (currentTurn !== -1) levels.push(currentLevel)
+        currentTurn = row.turn
+        currentLevel = row.inputTokens
+      } else {
+        currentLevel = row.inputTokens // last request wins within the turn
+      }
+    }
+    levels.push(currentLevel)
+    const growth = estimateCompactionGrowth(levels)
+    const eta = estimateCompactionEta(levels, windowTokens, lastInput)
+    if (growth !== undefined && eta !== undefined) {
+      forecast = t('card.compactEta')
+        .replace('{turns}', String(eta))
+        .replace('{avg}', formatTokens(Math.round(growth)))
+    }
+  }
+
   return (
     <div className={css.contextBlock}>
       <div className={css.contextLabelRow}>
         <span className={css.contextLabel}>{t('card.contextUsed')}</span>
-        <span className={css.contextValue}>{`${pct}%`}</span>
+        <span className={css.contextValue}>{`${pct}% · ${usageText}`}</span>
       </div>
       <div className={css.contextTrack}>
+        {/* Default compaction trigger line (compaction-basic thresholdRatio
+         *  0.8 × window). Styled thin + translucent so it reads as a
+         *  reference line, not a data mark. */}
+        <div className={css.contextTrigger} style={{ left: '80%' }} title={t('card.compactTrigger')} />
         <div className={`${css.contextFill}${near ? ` ${css.contextFillNear}` : ''}`} style={{ width: `${pct}%` }} />
       </div>
-      <div className={css.contextMeta}>
-        {`${usedK} / ${windowK}`}
-        {stats.maxOutputTokens !== undefined
-          ? ` · ${t('capability.output')} ${formatTokens(stats.maxOutputTokens)}`
-          : ''}
-      </div>
-      {singleTurnBig && !near
-        ? <div className={css.contextHint}>{`${t('turn.lastInput')} ${pct}%`}</div>
+      {compacted
+        ? (
+          <div className={css.contextHint}>
+            {t('card.compactDone')
+              .replace('{count}', String(compactions.count))
+              .replace('{time}', compactions.lastTime !== undefined ? formatTime(compactions.lastTime) : '—')
+              .replace('{tokens}', compactions.lastShadowedTokens !== undefined ? formatTokens(compactions.lastShadowedTokens) : '—')}
+          </div>
+        )
         : null}
+      {forecast !== undefined ? <div className={css.contextHint}>{forecast}</div> : null}
       {near ? <div className={css.contextWarn}>{t('card.contextNear')}</div> : null}
     </div>
   )
 }
 
-/** A compact horizontal bar per conversation TURN (a turn's tool-calling
- *  steps merge into one bar; see aggregateTurns). Only the most recent few
- *  turns fit the card width; newest turn is on the LEFT (descending). */
-function TurnsMiniChart({ turns, t }: {
+/** A compact vertical bar chart of per-turn cost. X-axis is time (oldest
+ *  turn left → newest right), bar height is cost. Peak turns use a warm
+ *  tint; hover shows the exact figure. Only the most recent few turns fit
+ *  the card width. Bars keep a fixed width and the strip scrolls
+ *  horizontally when the turns overflow (same rule as the detail panel). */
+function TurnsBarChart({ turns, t }: {
   turns: TurnCost[]
   t: (key: BillingKey) => string
 }) {
   const aggregated = aggregateTurns(turns)
-  const recent = aggregated.slice(-10).reverse()
+  const recent = aggregated.slice(-10)
   const max = Math.max(...recent.map(r => r.cost), 1)
+  // Per-bar tooltip through the shared state — the SAME dwell as the card's
+  // buttons (interaction.ts), so the whole billing UI hovers in one rhythm.
+  const [hovered, setHovered] = useState<TurnCost | null>(null)
+  const [, setTooltipAnchor, tooltip] = useTooltipState({
+    label: hovered !== null
+      ? `${t('turn.turn')} ${hovered.turn} · ${formatPrice(hovered.cost, currencySymbol(hovered.currency))} · ${t('turn.hitRate')} ${Math.round(hovered.cacheHitRate * 100)}%`
+      : '',
+    align: 'center',
+  })
   return (
     <div className={css.turnsBlock}>
       <div className={css.turnsHead}>
         <span className={css.turnsLabel}>{t('card.turns')}</span>
         <span className={css.turnsCount}>{t('card.turnsCount').replace('{count}', String(aggregated.length))}</span>
       </div>
-      <div className={css.turnsBars}>
+      <div className={css.turnsChart}>
         {recent.map((turn, i) => (
-          <div key={i} className={css.turnRow} title={`${t('turn.turn')} ${turn.turn} · ${formatPrice(turn.cost, currencySymbol(turn.currency))} · ${t('turn.hitRate')} ${Math.round(turn.cacheHitRate * 100)}%`}>
+          <div
+            key={i}
+            className={css.turnBarWrap}
+            onPointerEnter={(e) => { setHovered(turn); setTooltipAnchor(e.currentTarget) }}
+            onPointerLeave={() => { setHovered(null); setTooltipAnchor(null) }}
+          >
+            <div
+              className={`${css.turnBar}${turn.period === 'peak' ? ` ${css.turnBarPeak}` : ''}`}
+              style={{ height: `${Math.max(4, (turn.cost / max) * 100)}%` }}
+            />
             <span className={css.turnNo}>{turn.turn}</span>
-            <div className={css.turnTrack}>
-              <div
-                className={`${css.turnFill}${turn.period === 'peak' ? ` ${css.turnFillPeak}` : ''}`}
-                style={{ width: `${Math.max(2, (turn.cost / max) * 100)}%` }}
-              />
-            </div>
-            <span className={css.turnCost}>{formatPrice(turn.cost, currencySymbol(turn.currency))}</span>
           </div>
         ))}
       </div>
+      {tooltip}
     </div>
   )
 }
 
-/** Cost + period-split rows for one currency. */
-function CostRows({ stats, currency, t }: {
+/** Peak/off-peak cost split per currency, shown only when the session
+ *  configures peak windows. The total itself lives in the hero — no
+ *  duplicate here. */
+function PeriodSplit({ stats, t }: {
   stats: SessionBillingStats
-  currency: string
   t: (key: BillingKey) => string
 }) {
-  const symbol = currencySymbol(currency)
-  const period = stats.byPeriod[currency]
   return (
-    <div className={css.costRows}>
-      <div className={css.costRow}>
-        <span className={css.costLabel}>{t('row.cost')}</span>
-        <span className={css.costValue}>{formatPrice(stats.cost[currency] ?? 0, symbol)}</span>
-      </div>
-      {stats.hasPeakConfig && period !== undefined
-        ? (
-          <div className={css.periodRows}>
+    <div className={css.periodBlock}>
+      {Object.keys(stats.cost).map(currency => {
+        const symbol = currencySymbol(currency)
+        const period = stats.byPeriod[currency]
+        if (period === undefined) return null
+        return (
+          <div key={currency} className={css.periodRows}>
             <div className={css.periodRow}>
               <span className={css.periodLabel}>{t('period.offPeak')}</span>
               <span className={css.periodValue}>{formatPrice(period.offPeak, symbol)}</span>
@@ -460,7 +637,7 @@ function CostRows({ stats, currency, t }: {
             </div>
           </div>
         )
-        : null}
+      })}
     </div>
   )
 }

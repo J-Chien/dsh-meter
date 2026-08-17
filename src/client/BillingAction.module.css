@@ -1,3 +1,8 @@
+/* BillingAction: header badge + hover/click card.
+   All tokens come from theme.module.css (`--billing-*`); this file never
+   references `--dsw-*` directly. Interaction TIMING lives in
+   interaction.ts (HOVER_OPEN_MS / HOVER_CLOSE_MS / CLICK_DELAY_MS). */
+
 .root {
   position: relative;
   display: inline-flex;
@@ -14,9 +19,9 @@
   min-height: 28px;
   padding: 3px 6px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 12px;
   line-height: 18px;
   cursor: pointer;
@@ -24,11 +29,11 @@
 
 .trigger:hover,
 .trigger:focus-visible {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
 }
 
 .badge {
-  font-family: var(--dsw-font-mono);
+  font-family: var(--billing-font-mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -39,7 +44,7 @@
 .offPeakTag,
 .unpricedTag {
   flex: none;
-  font-family: var(--dsw-font-mono);
+  font-family: var(--billing-font-mono);
   font-size: 10px;
   line-height: 14px;
   padding: 1px 5px;
@@ -48,233 +53,126 @@
 }
 
 .peakTag {
-  color: var(--dsw-alias-state-error-primary);
-  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--billing-state-error);
+  background: var(--billing-hover-danger-bg);
 }
 
 .offPeakTag {
-  color: var(--dsw-alias-label-tertiary);
-  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 14%, transparent);
+  color: var(--billing-text-tertiary);
+  background: color-mix(in srgb, var(--billing-text-tertiary) 14%, transparent);
 }
 
 .unpricedTag {
-  color: var(--dsw-alias-state-warn-label);
-  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--billing-state-warn-label);
+  background: var(--billing-state-warn-bg);
 }
 
-.chevron {
+.chevron,
+.chevronOpen {
   flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  transition: transform 150ms ease;
+  color: var(--billing-text-tertiary);
+  transition: transform var(--billing-motion-fast) var(--billing-ease);
 }
 
 .chevronOpen {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
   transform: rotate(180deg);
-  transition: transform 150ms ease;
 }
 
-/* Portaled card: fixed-width, box-sizing keeps content inside. */
+/* ── Portaled card ───────────────────────────────────────────────────────
+ * Minimal professional surface: a quiet menu panel, no inner boxes. Visual
+ * hierarchy comes from type (size + weight) and the label color ladder,
+ * with semantic color reserved for the rare moments that genuinely need
+ * it (peak tag, near-limit warning). */
 .card {
   position: fixed;
-  z-index: 100;
+  z-index: var(--billing-z-card);
   box-sizing: border-box;
-  width: 300px;
-  padding: 12px 14px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  background: var(--dsw-specific-menu);
-  box-shadow: var(--dsw-shadow-lv3);
-  color: var(--dsw-alias-label-primary);
+  width: 320px;
+  padding: 0;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-3);
+  background: var(--billing-surface-float);
+  box-shadow: var(--billing-shadow);
+  color: var(--billing-text-primary);
+}
+
+/* Invisible bridge between trigger and card: it keeps the pointer inside
+ * the hover surface while crossing the 8px gap, so the grace timer is
+ * reset instead of closing the card (see BillingPopover). */
+.cardBridge {
+  position: fixed;
+  z-index: var(--billing-z-card);
+  width: 60px;
+  height: 12px;
 }
 
 .cardInner {
   display: flex;
   flex-direction: column;
-  gap: 10px;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
 }
 
+/* ── Card header: title + actions, no divider under — the model line
+ * right below keeps the eye moving into the data. ─────────────────────── */
 .cardHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding: 12px 14px 0;
 }
 
 .titleGroup {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  flex-direction: column;
+  gap: 0;
   min-width: 0;
 }
 
 .cardTitle {
   font-size: 13px;
   line-height: 18px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
-/* The current provider/model line under the card title. A tag-shaped info
- * block (markdown-tag: light = subtle grey, dark = one step deeper than the
- * card surface) so it reads as metadata, never competing with the token/cost
- * figures. The earlier `interactive-bg-hover-accent` fill was too strong in
- * dark mode (24% white over the card) and visually stole the focus. */
-.modelLine {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  min-width: 0;
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: var(--dsw-alias-markdown-tag);
-  font-family: var(--dsw-font-mono);
-  font-size: 11px;
-  line-height: 16px;
+.titleSub {
+  color: var(--billing-text-tertiary);
+  font-size: 10px;
+  line-height: 14px;
 }
 
-.modelProvider,
-.modelSlash,
-.modelEffort {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.modelName {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--dsw-alias-label-primary);
-}
-
-.refresh {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-}
-
-.refresh:hover,
-.refresh:focus-visible {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px 12px;
-  margin: 0;
-  min-width: 0;
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.grid dt {
-  color: var(--dsw-alias-label-secondary);
-  min-width: 0;
-}
-
-.grid dd {
-  margin: 0;
-  color: var(--dsw-alias-label-primary);
-  font-family: var(--dsw-font-mono);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
-}
-
-.costBlock {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-  min-width: 0;
-}
-
-.costRows {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.costRow,
-.periodRow {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-}
-
-.costLabel,
-.periodLabel {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
-  min-width: 0;
-  text-align: left;
-}
-
-.costValue,
-.periodValue {
-  color: var(--dsw-alias-label-primary);
-  font-family: var(--dsw-font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  line-height: 18px;
-  white-space: nowrap;
-}
-
-.periodRows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.periodRow + .periodRow {
-  margin-top: 0;
-}
-
-.periodLabel,
-.periodValue {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-}
-
+.refresh,
 .settings {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 22px;
-  height: 22px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   cursor: pointer;
 }
 
+.refresh {
+  width: 20px;
+  height: 20px;
+}
+
+.settings {
+  width: 22px;
+  height: 22px;
+}
+
+.refresh:hover,
+.refresh:focus-visible,
 .settings:hover,
 .settings:focus-visible {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--billing-text-primary);
+  background: var(--billing-hover-bg);
 }
 
 .headActions {
@@ -287,10 +185,10 @@
 .detail {
   flex: none;
   padding: 2px 6px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--billing-text-secondary);
   font-size: 11px;
   line-height: 16px;
   cursor: pointer;
@@ -298,17 +196,270 @@
 
 .detail:hover,
 .detail:focus-visible {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--billing-text-primary);
+  background: var(--billing-hover-bg);
 }
 
-/* Context-usage bar: cumulative input over the model's context window. */
+/* ── Body: breathing room, no inner boxes ─────────────────────────────── */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  min-width: 0;
+}
+
+/* Model line: the current provider/model. Quiet metadata pill. */
+.modelLine {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--billing-radius-1);
+  background: var(--billing-tag-bg);
+  font-family: var(--billing-font-mono);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.modelProvider {
+  flex: none;
+  color: var(--billing-text-tertiary);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.modelSlash {
+  flex: none;
+  color: var(--billing-text-tertiary);
+}
+
+.modelName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--billing-text-primary);
+}
+
+.modelEffort {
+  flex: none;
+  color: var(--billing-text-tertiary);
+}
+
+/* ── Hero metrics: two large figures, type-driven, no boxes ───────────── */
+.metricGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  min-width: 0;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metricLabel {
+  color: var(--billing-text-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.metricValue {
+  color: var(--billing-text-primary);
+  font-family: var(--billing-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 26px;
+  white-space: nowrap;
+}
+
+/* The hit-rate figure gets a quiet semantic tint only when it's a real
+ * win; otherwise it stays on the neutral ladder. */
+.metricHitHigh {
+  color: var(--billing-state-success);
+}
+
+/* ── Token usage: label/value ladder, hairline separators ─────────────── */
+.tokensCard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--billing-border-l2);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  margin: 0;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.grid dt,
+.grid dd {
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.grid dt {
+  color: var(--billing-text-secondary);
+  min-width: 0;
+}
+
+.grid dd {
+  margin: 0;
+  color: var(--billing-text-primary);
+  font-family: var(--billing-font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Peak/off-peak cost split (only when the session configures peak
+ * windows). No duplicate "total" row — the total lives in the hero. */
+.periodBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  margin-top: 8px;
+  border-top: 1px solid var(--billing-border-l2);
+  min-width: 0;
+}
+
+.periodRows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.periodRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.periodLabel {
+  color: var(--billing-text-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  min-width: 0;
+  text-align: left;
+}
+
+.periodValue {
+  color: var(--billing-text-secondary);
+  font-family: var(--billing-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* ── Recent-turns bar chart: vertical bars, oldest left → newest right ── */
+.turnsBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--billing-border-l2);
+}
+
+.turnsHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.turnsLabel {
+  color: var(--billing-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.turnsCount {
+  color: var(--billing-text-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+/* The chart box: a fixed-height area where bars grow upward from the
+ * baseline; the turn number sits under each bar on the x-axis. Fixed-width
+ * columns, chronological left→right — overflow scrolls horizontally
+ * instead of compressing the bars. */
+.turnsChart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 56px;
+  min-width: 0;
+  padding: 0 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.turnBarWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 18px;
+  min-width: 0;
+  height: 100%;
+  gap: 3px;
+}
+
+.turnBar {
+  width: 100%;
+  max-width: 22px;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--billing-chart-neutral);
+  transition: background var(--billing-motion-fast) var(--billing-ease);
+}
+
+.turnBarPeak {
+  background: var(--billing-chart-peak);
+}
+
+.turnBarWrap:hover .turnBar {
+  background: var(--billing-chart-accent);
+}
+
+.turnNo {
+  flex: none;
+  color: var(--billing-text-tertiary);
+  font-family: var(--billing-font-mono);
+  font-size: 9px;
+  line-height: 12px;
+}
+
+/* ── Context-usage bar: quiet, one thin line, no box ──────────────────── */
 .contextBlock {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
-  padding-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--billing-border-l2);
 }
 
 .contextLabelRow {
@@ -320,135 +471,72 @@
 }
 
 .contextLabel {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
+  color: var(--billing-text-tertiary);
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .contextValue {
-  color: var(--dsw-alias-label-primary);
-  font-family: var(--dsw-font-mono);
+  color: var(--billing-text-secondary);
+  font-family: var(--billing-font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
 }
 
 .contextTrack {
   position: relative;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--dsw-alias-bg-layer-3);
+  height: 4px;
+  border-radius: 2px;
+  background: var(--billing-surface-sunken);
   overflow: hidden;
+}
+
+/* The default compaction trigger line (80% of the window): a hairline
+ * reference mark, translucent so it never competes with the data fill.
+ * A small notch above the track keeps it readable at 4px track height. */
+.contextTrigger {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--billing-state-warn);
+  opacity: 0.45;
+  z-index: 1;
+}
+
+.contextTrigger::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -1.5px;
+  width: 4px;
+  height: 1px;
+  background: var(--billing-state-warn);
+  opacity: 0.9;
 }
 
 .contextFill {
   height: 100%;
-  border-radius: 3px;
-  background: var(--dsw-alias-state-business-primary);
-  transition: width 200ms ease;
+  border-radius: 2px;
+  background: var(--billing-text-secondary);
+  transition: width var(--billing-motion-slow) var(--billing-ease);
 }
 
 .contextFillNear {
-  background: var(--dsw-alias-state-warn-primary);
-}
-
-.contextMeta {
-  color: var(--dsw-alias-label-tertiary);
-  font-family: var(--dsw-font-mono);
-  font-size: 10px;
-  line-height: 14px;
+  background: var(--billing-state-warn);
 }
 
 .contextWarn {
-  color: var(--dsw-alias-state-warn-label);
+  color: var(--billing-state-warn-label);
   font-size: 11px;
   line-height: 16px;
 }
 
 .contextHint {
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--billing-text-tertiary);
   font-size: 10px;
   line-height: 14px;
 }
 
-/* Recent-turns mini chart: one horizontal bar per turn. */
-.turnsBlock {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
-
-.turnsHead {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.turnsLabel {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.turnsCount {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.turnsBars {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.turnRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.turnNo {
-  flex: none;
-  width: 18px;
-  color: var(--dsw-alias-label-tertiary);
-  font-family: var(--dsw-font-mono);
-  font-size: 10px;
-  line-height: 14px;
-  text-align: right;
-}
-
-.turnTrack {
-  flex: 1;
-  min-width: 0;
-  height: 8px;
-  border-radius: 4px;
-  background: var(--dsw-alias-bg-layer-3);
-  overflow: hidden;
-}
-
-.turnFill {
-  height: 100%;
-  border-radius: 4px;
-  background: var(--dsw-static-deepseek-400);
-}
-
-.turnFillPeak {
-  background: var(--dsw-static-amber-400);
-}
-
-.turnCost {
-  flex: none;
-  min-width: 44px;
-  color: var(--dsw-alias-label-secondary);
-  font-family: var(--dsw-font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 10px;
-  line-height: 14px;
-  text-align: right;
-}

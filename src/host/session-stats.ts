@@ -7,7 +7,9 @@
  * unit-testable in isolation.
  */
 import type { EpochHeader, SessionEvent } from '@deepseek-ai/dsh-session'
-import { effectivePrice, priceTokens, type PriceTable } from './price.ts'
+// Type-only: brings the `compaction/*` SessionEventMap variants into scope.
+import type {} from '@deepseek-ai/dsh-compaction'
+import { priceRequest, type PriceTable } from './price.ts'
 import { EMPTY_STATS, RECENT_TURNS_CAP, type SessionBillingStats, type TurnCost } from '../shared.ts'
 
 export type { SessionBillingStats } from '../shared.ts'
@@ -29,6 +31,7 @@ function cloneStats(stats: SessionBillingStats): SessionBillingStats {
       Object.entries(stats.byPeriod).map(([c, v]) => [c, { ...v }]),
     ),
     turns: [...stats.turns],
+    compactions: { ...stats.compactions },
   }
 }
 
@@ -95,19 +98,17 @@ export function foldEvent(
     const cacheWriteTokens = usage.cacheWriteTokens ?? 0
     const outputTokens = usage.outputTokens
     const totalInputLength = uncachedInputTokens + cacheReadTokens + cacheWriteTokens
-    const eff = effectivePrice(
+    // One pricing formula, one place: priceRequest resolves the effective
+    // tier/period price AND prices the four buckets, so the fold and any
+    // future caller can never drift apart.
+    const { priceUnits: cost, period, found } = priceRequest(
       table,
       config.provider,
       config.model,
       config.reasoningEffort,
       event.time,
-      totalInputLength,
-      outputTokens,
+      { inputTokens: uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
     )
-    const cost = priceTokens(uncachedInputTokens, eff.input)
-      + priceTokens(cacheReadTokens, eff.cacheInput)
-      + priceTokens(cacheWriteTokens, eff.cacheWrite)
-      + priceTokens(outputTokens, eff.output)
 
     const stats = cloneStats(state.stats)
     stats.uncachedInputTokens += uncachedInputTokens
@@ -117,14 +118,14 @@ export function foldEvent(
     stats.lastRequestInputTokens = totalInputLength
 
     let currency: string | undefined
-    if (eff.found) {
+    if (found) {
       currency = table.providers[config.provider]?.currency ?? 'CNY'
       stats.requestCount += 1
       stats.cost[currency] = (stats.cost[currency] ?? 0) + cost
-      const period = stats.byPeriod[currency] ?? { offPeak: 0, peak: 0 }
-      if (eff.period === 'peak') period.peak += cost
-      else period.offPeak += cost
-      stats.byPeriod[currency] = period
+      const periodSplit = stats.byPeriod[currency] ?? { offPeak: 0, peak: 0 }
+      if (period === 'peak') periodSplit.peak += cost
+      else periodSplit.offPeak += cost
+      stats.byPeriod[currency] = periodSplit
       if (modelHasPeriods(table, config.provider, config.model, config.reasoningEffort)) {
         stats.hasPeakConfig = true
         const key = `${config.provider}/${config.model}`
@@ -150,15 +151,27 @@ export function foldEvent(
       cacheHitRate: uncachedInputTokens + cacheReadTokens > 0
         ? cacheReadTokens / (uncachedInputTokens + cacheReadTokens)
         : 0,
-      cost: eff.found ? cost : 0,
+      cost: found ? cost : 0,
       currency: currency ?? 'CNY',
-      period: eff.period,
-      priced: eff.found,
+      period,
+      priced: found,
     })
 
     const totalInput = stats.uncachedInputTokens + stats.cacheReadTokens
     stats.cacheHitRate = totalInput > 0 ? stats.cacheReadTokens / totalInput : 0
     return { header, stats }
+  }
+  if (event.type === 'compaction/summary') {
+    // A successful compaction's shadow price: the exact heuristic tokens of
+    // the replaced range. Pure observation — the harness meter already
+    // computed it, we just record the history for the forecast strip.
+    const stats = cloneStats(state.stats)
+    stats.compactions = {
+      count: stats.compactions.count + 1,
+      lastTime: event.time,
+      lastShadowedTokens: event.data.shadowedTokenCount,
+    }
+    return { header: state.header, stats }
   }
   return state
 }

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, EMPTY_STATS } from '../src/host/session-stats.ts'
-import { aggregateTurns } from '../src/shared.ts'
+import { aggregateTurns, estimateCompactionGrowth, estimateCompactionEta } from '../src/shared.ts'
 import type { PriceTable } from '../src/shared.ts'
+import { assertEmptyBillingStats } from '../src/invariant.ts'
 
 // --- priceTokens ---
 assert.equal(priceTokens(1_000_000, cnyPerMillion(10.155)), 1_015_500, '1M @10.155/M = 10.155')
@@ -137,6 +139,49 @@ assert.deepEqual(emptyStats.turns, [], 'no requests → empty turns')
 assert.equal(emptyStats.lastRequestInputTokens, undefined)
 assert.equal(emptyStats.contextWindow, undefined)
 assert.equal(emptyStats.maxOutputTokens, undefined)
+
+// --- invariant companion: the empty state is the canonical zero ---
+assertEmptyBillingStats(emptyStats)
+assertEmptyBillingStats(EMPTY_STATS)
+assert.throws(() => assertEmptyBillingStats({ ...EMPTY_STATS, requestCount: 1 }), /empty stats must be all-zero/)
+console.log('INVARIANT CHECK PASSED')
+
+// --- compaction/summary fold: count + last facts ---
+const compactionEvent = {
+  type: 'compaction/summary', seq: 9, time: at('2026-08-17T23:30:00+08:00'),
+  data: {
+    compactionId: 'c-1',
+    summary: [],
+    shadowedRange: { start: 1, end: 4 },
+    shadowedSeqs: [1, 2, 3, 4],
+    shadowedTokenCount: 12_345,
+    provider: 'wpsai',
+    model: 'deepseek/deepseek-v4-flash',
+  },
+} as SessionEvent
+const compacted = foldBilling([...log, compactionEvent], table)
+assert.equal(compacted.compactions.count, 1, 'compaction/summary increments the count')
+assert.equal(compacted.compactions.lastTime, at('2026-08-17T23:30:00+08:00'), 'last compaction time recorded')
+assert.equal(compacted.compactions.lastShadowedTokens, 12_345, 'shadowed token count recorded')
+assert.equal(foldBilling(log, table).compactions.count, 0, 'no compaction events → count 0')
+
+console.log('COMPACTION FOLD CHECK PASSED')
+
+// --- compaction ETA: trimmed mean over positive level deltas ---
+// Levels grow ~10K/turn steadily; one light turn (+2K) and one heavy (+20K)
+// must be trimmed away — the estimate tracks the typical +10K, not the swing.
+const etaLevels = [10_000, 20_000, 30_000, 32_000, 42_000, 52_000, 62_000, 72_000]
+assert.equal(estimateCompactionGrowth(etaLevels), 10_000, 'trimmed mean drops the outlier deltas')
+// ETA = headroom / growth: window 128K, trigger 0.8 → 102_400; last 72K → headroom 30_400 → 4 turns.
+assert.equal(estimateCompactionEta(etaLevels, 128_000, 72_000), 4, 'eta = ceil(headroom / trimmed growth)')
+// Compaction reset: deltas <= 0 dropped; with fewer than 3 positive deltas, no estimate.
+const resetLevels = [50_000, 10_000, 12_000, 13_000]
+assert.equal(estimateCompactionGrowth(resetLevels), undefined, 'compaction reset leaves <3 positive deltas')
+assert.equal(estimateCompactionEta(resetLevels, 128_000, 13_000), undefined, 'no estimate without growth signal')
+// No headroom (already above the trigger line) → no estimate.
+assert.equal(estimateCompactionEta(etaLevels, 128_000, 110_000), undefined, 'no headroom → no estimate')
+
+console.log('COMPACTION ETA CHECK PASSED')
 
 // --- assistant/message WITHOUT usage → not in turns, not in totals ---
 const noUsageLog: SessionEvent[] = [
