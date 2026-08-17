@@ -183,6 +183,61 @@ export function aggregateTurns(turns: readonly TurnCost[]): TurnSummary[] {
   return [...byTurn.values()]
 }
 
+/* ── Context-growth model ──────────────────────────────────────────────
+ *
+ *  One turn's CONTEXT GROWTH = this turn's SNAPSHOT (its last request's
+ *  total input, incl. cache) MINUS the previous turn's snapshot.
+ *
+ *  Why snapshot deltas and not Σ(uncached input + output):
+ *  - Snapshot deltas are IMMUNE to cache state. When the cache expires
+ *    mid-session, the next turn's uncached input replays the entire
+ *    history (a 7.5K net turn can spike to 555K), which would blow up any
+ *    uncached-based growth series. The TOTAL input snapshot does not move:
+ *    it counts the same context once whether it was read from cache or
+ *    re-sent.
+ *  - The delta also carries the turn's output implicitly (next snapshot
+ *    includes this turn's assistant messages), so it measures real context
+ *    growth without needing to disentangle cache hits from misses.
+ *
+ *  Real-log check (18 turns): snapshot deltas were 80K/110K/13K/…/2K–48K;
+ *  last-10 trimmed mean ≈ 6.1K — the same order as the uncached+output
+ *  net (≈ 11.2K) but stable across cache regimes.
+ * ───────────────────────────────────────────────────────────────────── */
+
+/** Per-turn context SNAPSHOTS in log order: each turn's LAST request total
+ *  input (uncached + cache read + cache write). */
+export function turnSnapshots(turns: readonly TurnCost[]): number[] {
+  const snapshots: number[] = []
+  let currentTurn: number | undefined
+  let snapshot = 0
+  for (const row of turns) {
+    if (row.turn !== currentTurn) {
+      if (currentTurn !== undefined) snapshots.push(snapshot)
+      currentTurn = row.turn
+    }
+    snapshot = row.inputTokens // last request wins within the turn
+  }
+  if (currentTurn !== undefined) snapshots.push(snapshot)
+  return snapshots
+}
+
+/** Per-turn context GROWTH in log order: each turn's snapshot minus the
+ *  previous turn's (first turn has no growth). Cache-state immune — see the
+ *  model note above. */
+export function turnGrowths(turns: readonly TurnCost[]): number[] {
+  const snapshots = turnSnapshots(turns)
+  const growths: number[] = []
+  for (let i = 1; i < snapshots.length; i += 1) {
+    growths.push(snapshots[i]! - snapshots[i - 1]!)
+  }
+  return growths
+}
+
+/** Turn number of the most recent request row; undefined on an empty log. */
+export function currentTurnOf(turns: readonly TurnCost[]): number | undefined {
+  return turns.length > 0 ? turns[turns.length - 1]!.turn : undefined
+}
+
 /** Max per-request rows the projection frame carries (bounded for size). */
 export const RECENT_TURNS_CAP = 50
 /** Context-usage ratio above which the card warns "near limit". */
@@ -190,72 +245,47 @@ export const CONTEXT_WARN_THRESHOLD = 0.85
 /** Default compaction trigger ratio (compaction-basic thresholdRatio). */
 export const COMPACT_TRIGGER_RATIO = 0.8
 
-/**
- * Extract per-turn context LEVELS from the request rows, EXCLUDING the
- * in-progress turn. A turn's level is its LAST request's total input (a
- * tool-calling turn re-sends the whole context per step, so summing steps
- * would multi-count). The in-progress turn is excluded because its level
- * grows with every request until the turn closes — including it makes the
- * growth series (and any forecast off it) jump at every turn boundary and
- * drift within a turn.
- *
- * `currentTurn` = the turn of the last request row; when undefined the
- * whole log is complete.
- */
-export function completedTurnLevels(
-  turns: readonly TurnCost[],
-): { levels: number[]; currentTurn: number | undefined } {
-  const levels: number[] = []
-  let currentTurn: number | undefined
-  let currentLevel = 0
-  for (const row of turns) {
-    if (row.turn !== currentTurn) {
-      if (currentTurn !== undefined) levels.push(currentLevel)
-      currentTurn = row.turn
-      currentLevel = row.inputTokens
-    } else {
-      currentLevel = row.inputTokens // last request wins within the turn
-    }
-  }
-  // The final turn of a LIVE session is always in progress — keep it out of
-  // the levels; the loop above only pushed turns once their successor
-  // appeared, so the tail turn is excluded by construction.
-  return { levels, currentTurn }
-}
-
-/**
- * Stable per-turn context growth: positive level deltas over the last 10
- * COMPLETED turns, trimmed (min & max dropped) before averaging — the
- * TYPICAL turn's growth, not the latest swing. Returns undefined with < 3
- * positive deltas or no growth.
- */
-export function estimateCompactionGrowth(levels: readonly number[]): number | undefined {
-  const recent = levels.slice(-10)
-  const deltas: number[] = []
-  for (let i = 1; i < recent.length; i += 1) {
-    const delta = recent[i]! - recent[i - 1]!
-    if (delta > 0) deltas.push(delta)
-  }
-  if (deltas.length < 3) return undefined
-  const sorted = [...deltas].sort((a, b) => a - b)
+/** Trimmed mean of positive values: sort ascending, drop min & max,
+ *  average the rest. < 3 values → undefined (no signal). */
+function trimmedMean(values: readonly number[]): number | undefined {
+  if (values.length < 3) return undefined
+  const sorted = [...values].sort((a, b) => a - b)
   const trimmed = sorted.slice(1, -1)
   const growth = trimmed.reduce((acc, d) => acc + d, 0) / trimmed.length
   return growth > 0 ? growth : undefined
 }
 
 /**
- * Estimate how many turns remain until the harness auto-compacts, from the
- * per-turn context LEVELS (each turn's LAST request total input, in log
- * order) — see {@link estimateCompactionGrowth} for the stability model.
- * Returns undefined when growth is unavailable or no headroom remains below
- * the trigger line.
+ * Stable per-turn net growth over COMPLETED turns (the in-progress turn is
+ * excluded: its net grows with every request until it closes, which would
+ * make the series jump at turn boundaries). Two windows are combined
+ * CONSERVATIVELY — the trimmed mean over the whole completed history AND
+ * over the last 10 completed turns; the SMALLER wins. Early sessions carry
+ * one-off setup (system prompt, schema, first loads) that inflate the
+ * all-time mean; recent light turns alone would over-promise. Taking the
+ * minimum keeps the estimate grounded whichever regime the session is in.
+ * Returns undefined with < 3 positive growths or no growth.
+ */
+export function estimateCompactionGrowth(growths: readonly number[]): number | undefined {
+  const positive = growths.filter(g => g > 0)
+  const all = trimmedMean(positive)
+  const recent = trimmedMean(positive.slice(-10))
+  if (all === undefined) return recent
+  if (recent === undefined) return all
+  return Math.min(all, recent)
+}
+
+/**
+ * Estimate how many turns remain until the harness auto-compacts: headroom
+ * (trigger line − current context snapshot) ÷ stable net growth.
+ * Returns undefined when growth is unavailable or no headroom remains.
  */
 export function estimateCompactionEta(
-  levels: readonly number[],
+  growths: readonly number[],
   contextWindow: number,
   lastInput: number,
 ): number | undefined {
-  const growth = estimateCompactionGrowth(levels)
+  const growth = estimateCompactionGrowth(growths)
   if (growth === undefined) return undefined
   const headroom = contextWindow * COMPACT_TRIGGER_RATIO - lastInput
   if (headroom <= 0) return undefined

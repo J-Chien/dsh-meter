@@ -11,7 +11,7 @@ import {
   IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { CONTEXT_WARN_THRESHOLD, EMPTY_STATS, completedTurnLevels, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost } from '../shared.ts'
+import { CONTEXT_WARN_THRESHOLD, EMPTY_STATS, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { formatPrice, formatTime, formatTokens } from './format.ts'
 import { getPriceTable, refreshSessionStats } from './billing-api.ts'
 import { requestLocateModel } from './locate.ts'
@@ -506,25 +506,27 @@ function ContextBar({ ratio, t, stats }: {
   const compactions = stats.compactions
   const compacted = compactions !== undefined && compactions.count > 0
 
-  // Forecast (see doc comment above for the model). Growth comes from
-  // COMPLETED turns only — the in-progress turn's level grows with every
-  // request, so including it makes the estimate jump at each turn boundary
-  // and drift inside a turn. The position used for headroom is monotone:
-  // max(last request input, last completed turn's level) — a cache-hit-rich
-  // request can report LOWER total input than the completed turn before it,
-  // and letting that shrink the position would make the ETA jump upward.
+  // Forecast (see the model note in shared.ts). Growth = snapshot deltas
+  // (this turn's last-request total input minus the previous turn's) —
+  // immune to cache expiry: a cache miss replays the whole history as
+  // uncached tokens but the TOTAL input snapshot stays the same. Growth
+  // comes from COMPLETED turn transitions only (the in-progress turn's
+  // snapshot keeps growing until it closes). Headroom uses the live
+  // snapshot (last request's total input).
   let forecast: string | undefined
   const windowTokens = stats.contextWindow
   const lastInput = stats.lastRequestInputTokens
   if (windowTokens !== undefined && lastInput !== undefined && stats.turns.length >= 2) {
-    const { levels } = completedTurnLevels(stats.turns)
-    const position = Math.max(lastInput, levels.length > 0 ? levels[levels.length - 1]! : 0)
-    const growth = estimateCompactionGrowth(levels)
-    const eta = estimateCompactionEta(levels, windowTokens, position)
+    const growths = turnGrowths(stats.turns)
+    const completed = growths.slice(0, -1) // drop the in-progress turn's growth
+    const growth = estimateCompactionGrowth(completed)
+    const eta = estimateCompactionEta(completed, windowTokens, lastInput)
     if (growth !== undefined && eta !== undefined) {
+      const headroom = windowTokens * 0.8 - lastInput
       forecast = t('card.compactEta')
         .replace('{turns}', String(eta))
         .replace('{avg}', formatTokens(Math.round(growth)))
+        .replace('{headroom}', formatTokens(Math.max(0, Math.round(headroom))))
     }
   }
 
@@ -564,11 +566,48 @@ function ContextBar({ ratio, t, stats }: {
  *  peak rate). Hover shows the full picture: turn, token usage, cost, hit
  *  rate. Bars keep a fixed width; the chart measures its own width and
  *  shows as many recent turns as fit — no hardcoded count. */
+/** One bar in the mini chart: the turn's NET context growth (uncached
+ *  input + output; cache read/write excluded — reads are history re-reads,
+ *  writes are this turn's own input). Tooltip carries the same net plus
+ *  the turn's real cost and hit rate. */
+function TurnBar({ turn, level, max, t }: {
+  turn: TurnSummary
+  level: number
+  max: number
+  t: (key: BillingKey) => string
+}) {
+  const [, setTooltipAnchor, tooltip] = useTooltipState({
+    label: `${t('turn.turn')} ${turn.turn} · ${t('turn.growth')} ${formatTokens(level)} · ${formatPrice(turn.cost, currencySymbol(turn.currency))} · ${t('turn.hitRate')} ${Math.round(turn.cacheHitRate * 100)}%`,
+    align: 'center',
+  })
+  return (
+    <div
+      className={css.turnBarWrap}
+      onPointerEnter={(e) => setTooltipAnchor(e.currentTarget)}
+      onPointerLeave={() => setTooltipAnchor(null)}
+    >
+      <div
+        className={`${css.turnBar}${turn.period === 'peak' ? ` ${css.turnBarPeak}` : ''}`}
+        style={{ height: `${Math.max(4, (level / max) * 100)}%` }}
+      />
+      <span className={css.turnNo}>{turn.turn}</span>
+      {tooltip}
+    </div>
+  )
+}
+
 function TurnsBarChart({ turns, t }: {
   turns: TurnCost[]
   t: (key: BillingKey) => string
 }) {
   const aggregated = aggregateTurns(turns)
+  // Bar height + tooltip use the turn's SNAPSHOT-DELTA growth: this turn's
+  // last-request total input minus the previous turn's. Cache-state immune
+  // (a cache miss replays history as uncached but the total is the same).
+  // The first turn has no predecessor → no growth bar (it contributes 0).
+  const growths = turnGrowths(turns)
+  const growthByTurn = new Map<number, number>()
+  aggregated.forEach((turn, i) => growthByTurn.set(turn.turn, i > 0 ? growths[i - 1] ?? 0 : 0))
   // Fit count from the measured strip width: each column is 18px and needs
   // a 3px breathing gap, so 21px per column; the 4px is the 2×2px strip
   // padding. space-between spreads the leftover evenly. Falls back to 10
@@ -588,17 +627,7 @@ function TurnsBarChart({ turns, t }: {
     return () => observer.disconnect()
   }, [])
   const recent = aggregated.slice(-fit)
-  const max = Math.max(...recent.map(r => r.inputTokens), 1)
-  // Per-bar tooltip through the shared state — the SAME dwell as the card's
-  // buttons (interaction.ts), so the whole billing UI hovers in one rhythm.
-  // Content carries the full turn picture: turn, token usage, cost, hit rate.
-  const [hovered, setHovered] = useState<TurnCost | null>(null)
-  const [, setTooltipAnchor, tooltip] = useTooltipState({
-    label: hovered !== null
-      ? `${t('turn.turn')} ${hovered.turn} · ${t('turn.input')} ${formatTokens(hovered.inputTokens)} · ${formatPrice(hovered.cost, currencySymbol(hovered.currency))} · ${t('turn.hitRate')} ${Math.round(hovered.cacheHitRate * 100)}%`
-      : '',
-    align: 'center',
-  })
+  const max = Math.max(...recent.map(r => growthByTurn.get(r.turn) ?? 0), 1)
   return (
     <div className={css.turnsBlock}>
       <div className={css.turnsHead}>
@@ -606,22 +635,10 @@ function TurnsBarChart({ turns, t }: {
         <span className={css.turnsCount}>{t('card.turnsCount').replace('{count}', String(aggregated.length))}</span>
       </div>
       <div ref={stripRef} className={css.turnsChart}>
-        {recent.map((turn, i) => (
-          <div
-            key={i}
-            className={css.turnBarWrap}
-            onPointerEnter={(e) => { setHovered(turn); setTooltipAnchor(e.currentTarget) }}
-            onPointerLeave={() => { setHovered(null); setTooltipAnchor(null) }}
-          >
-            <div
-              className={`${css.turnBar}${turn.period === 'peak' ? ` ${css.turnBarPeak}` : ''}`}
-              style={{ height: `${Math.max(4, (turn.inputTokens / max) * 100)}%` }}
-            />
-            <span className={css.turnNo}>{turn.turn}</span>
-          </div>
+        {recent.map((turn) => (
+          <TurnBar key={turn.turn} turn={turn} level={growthByTurn.get(turn.turn) ?? 0} max={max} t={t} />
         ))}
       </div>
-      {tooltip}
     </div>
   )
 }

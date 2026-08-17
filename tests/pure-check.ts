@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, EMPTY_STATS } from '../src/host/session-stats.ts'
-import { aggregateTurns, completedTurnLevels, estimateCompactionGrowth, estimateCompactionEta } from '../src/shared.ts'
+import { aggregateTurns, turnSnapshots, turnGrowths, estimateCompactionGrowth, estimateCompactionEta } from '../src/shared.ts'
 import type { PriceTable } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
 
@@ -167,35 +167,43 @@ assert.equal(foldBilling(log, table).compactions.count, 0, 'no compaction events
 
 console.log('COMPACTION FOLD CHECK PASSED')
 
-// --- completedTurnLevels: in-progress turn excluded, last request wins ---
-const levelRows: Parameters<typeof completedTurnLevels>[0] = [
-  { turn: 1, step: 1, time: 1, inputTokens: 10_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
-  { turn: 1, step: 2, time: 2, inputTokens: 15_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
-  { turn: 2, step: 1, time: 3, inputTokens: 22_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
-  { turn: 3, step: 1, time: 4, inputTokens: 30_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
-  { turn: 3, step: 2, time: 5, inputTokens: 31_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+// --- turnSnapshots / turnGrowths: snapshot-delta model, cache-state immune ---
+// Turn 2's cache EXPIRES between requests: uncached input replays history
+// (spikes to 63K) but the TOTAL input snapshot barely moves (55K → 63K).
+// The snapshot-delta model must NOT blow up on this; an uncached+output net
+// model would (63K + output = 64K 'growth' for a turn that really grew 8K).
+const snapRows: Parameters<typeof turnSnapshots>[0] = [
+  { turn: 1, step: 1, time: 1, inputTokens: 50_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1_000, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 1, step: 2, time: 2, inputTokens: 55_000, cacheReadTokens: 50_000, cacheWriteTokens: 0, outputTokens: 500, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 2, step: 1, time: 3, inputTokens: 63_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1_000, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
 ]
-const levelFold = completedTurnLevels(levelRows)
-assert.deepEqual(levelFold.levels, [15_000, 22_000], 'only completed turns (turn 1 last request, turn 2); in-progress turn 3 excluded')
-assert.equal(levelFold.currentTurn, 3, 'current turn reported')
-// A live session's final turn is ALWAYS in progress: rows ending at turn 2
-// still exclude turn 2 (its last request may not be its final one).
-const completeRows = levelRows.slice(0, 3)
-assert.deepEqual(completedTurnLevels(completeRows).levels, [15_000], 'final turn excluded from completed levels')
+assert.deepEqual(turnSnapshots(snapRows), [55_000, 63_000], 'snapshots = last request total input per turn')
+assert.deepEqual(turnGrowths(snapRows), [8_000], 'cache expiry does not inflate growth')
+// Multi-step turn: only the LAST request snapshot counts.
+const multiSnapRows: Parameters<typeof turnSnapshots>[0] = [
+  { turn: 1, step: 1, time: 1, inputTokens: 10_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1_000, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 1, step: 2, time: 2, inputTokens: 9_500, cacheReadTokens: 9_000, cacheWriteTokens: 0, outputTokens: 500, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 2, step: 1, time: 3, inputTokens: 12_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 500, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+]
+assert.deepEqual(turnSnapshots(multiSnapRows), [9_500, 12_000], 'last request wins within a turn')
+assert.deepEqual(turnGrowths(multiSnapRows), [2_500], 'growth = next snapshot − previous snapshot')
 
-console.log('TURN LEVELS CHECK PASSED')
+console.log('SNAPSHOT DELTA CHECK PASSED')
 
-// --- compaction ETA: trimmed mean over positive level deltas ---
-// Levels grow ~10K/turn steadily; one light turn (+2K) and one heavy (+20K)
-// must be trimmed away — the estimate tracks the typical +10K, not the swing.
-const etaLevels = [10_000, 20_000, 30_000, 32_000, 42_000, 52_000, 62_000, 72_000]
+// --- compaction ETA: conservative two-window trimmed mean over net growths ---
+// Steady ~10K/turn net; one light (+2K) and one heavy (+20K) trimmed away.
+const etaLevels = [10_000, 10_000, 2_000, 10_000, 10_000, 10_000, 20_000, 10_000]
 assert.equal(estimateCompactionGrowth(etaLevels), 10_000, 'trimmed mean drops the outlier deltas')
-// ETA = headroom / growth: window 128K, trigger 0.8 → 102_400; last 72K → headroom 30_400 → 4 turns.
+// ETA = headroom / growth: window 128K, trigger 0.8 → 102_400; snapshot 72K → headroom 30_400 → 4 turns.
 assert.equal(estimateCompactionEta(etaLevels, 128_000, 72_000), 4, 'eta = ceil(headroom / trimmed growth)')
-// Compaction reset: deltas <= 0 dropped; with fewer than 3 positive deltas, no estimate.
-const resetLevels = [50_000, 10_000, 12_000, 13_000]
-assert.equal(estimateCompactionGrowth(resetLevels), undefined, 'compaction reset leaves <3 positive deltas')
-assert.equal(estimateCompactionEta(resetLevels, 128_000, 13_000), undefined, 'no estimate without growth signal')
+// Two-window conservative: early setup inflates the all-time mean (seven
+// +20K turns), the last 10 turns are all +2K — the SMALLER (+2K) wins.
+const earlyHeavyLevels = [20_000, 20_000, 20_000, 20_000, 20_000, 20_000, 20_000, 2_000, 2_000, 2_000, 2_000, 2_000, 2_000, 2_000, 2_000, 2_000, 2_000]
+assert.equal(estimateCompactionGrowth(earlyHeavyLevels), 2_000, 'conservative min of all-time vs recent windows')
+assert.equal(estimateCompactionEta(earlyHeavyLevels, 256_000, 162_000), 22, 'eta uses the conservative growth (headroom 42_800 / 2K = 22)')
+// No positive growth → no estimate.
+const resetLevels = [0, 0, 0]
+assert.equal(estimateCompactionGrowth(resetLevels), undefined, 'no positive growth → no estimate')
 // No headroom (already above the trigger line) → no estimate.
 assert.equal(estimateCompactionEta(etaLevels, 128_000, 110_000), undefined, 'no headroom → no estimate')
 
