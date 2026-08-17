@@ -1,4 +1,4 @@
-# dsh-billing 插件审查报告
+# dsh-meter 插件审查报告
 
 > 审查人：k3 审查 agent · 日期：2026-08-16 · 范围：`scratch-billing/` 全部源码（host/client 半区、构建配置、测试）+ 实证验证
 > **状态：已全部修复（v0.2.5，见 PRD §10 迭代记录）**，修复中额外发现并修复：`tsconfig.json` 的 `ignoreDeprecations: "6.0"` 在 TS 5.9 下让 typecheck 直接报错。下方每条保留作审查记录与验收依据。

@@ -1,4 +1,4 @@
-# dsh-billing
+# dsh-meter
 
 DeepSeek Harness 的**按会话计费插件**：在每个会话右上角展示当前会话的 token 用量与费用（含缓存命中/未命中/写入区分、缓存命中率、按请求时刻归属的高峰/空闲计价、按请求长度取档的分段计价），并提供 GUI 设置页编辑价格表。
 
@@ -156,26 +156,26 @@ dsh plugin --profile web add ./scratch-billing
 npx @deepseek-ai/dsh web
 ```
 
-`dsh plugin add` 会自动初始化 profile、`pnpm install`（`prepare` 脚本自动构建 `lib/`）、并把 `dsh-billing` 追加进 `dsh.profile.bundles`。
+`dsh plugin add` 会自动初始化 profile、`pnpm install`（`prepare` 脚本自动构建 `lib/`）、并把 `dsh-meter` 追加进 `dsh.profile.bundles`。
 
 #### 方式 B：打包 tarball（对方只装、不改源码）
 
 在本机已构建好的目录里：
 
 ```sh
-pnpm pack          # 产出 dsh-billing-0.2.6.tgz（含 lib/ + src/ + 全部构建配置）
+pnpm pack          # 产出 dsh-meter-0.2.6.tgz（含 lib/ + src/ + 全部构建配置）
 ```
 
 把 `.tgz` 给目标机器，在任意目录执行：
 
 ```sh
-dsh plugin --profile web add ./dsh-billing-0.2.6.tgz
+dsh plugin --profile web add ./dsh-meter-0.2.6.tgz
 npx @deepseek-ai/dsh web
 ```
 
 #### 方式 C：直接拷已安装的 node_modules（最简，跳过 install/build）
 
-把 `~/.dsh/profiles/web/node_modules/dsh-billing/` 整个拷到目标机器同目录，并在目标机器 `~/.dsh/profiles/web/package.json` 的 `dependencies` 里补一行 `"dsh-billing": "link:<实际路径>"`，然后重启 `dsh web`。
+把 `~/.dsh/profiles/web/node_modules/dsh-meter/` 整个拷到目标机器同目录，并在目标机器 `~/.dsh/profiles/web/package.json` 的 `dependencies` 里补一行 `"dsh-meter": "link:<实际路径>"`，然后重启 `dsh web`。
 
 #### 跨平台注意事项
 
@@ -186,8 +186,8 @@ npx @deepseek-ai/dsh web
 
 #### 迁移后验证
 
-1. `dsh plugin --profile web add ...` 输出里能看到 `dsh-billing` 被加入 `dsh.profile.bundles`（查看 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 数组）。
-2. 目标 `node_modules/dsh-billing/lib/` 存在 `index.js` + `client.js`。
+1. `dsh plugin --profile web add ...` 输出里能看到 `dsh-meter` 被加入 `dsh.profile.bundles`（查看 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 数组）。
+2. 目标 `node_modules/dsh-meter/lib/` 存在 `index.js` + `client.js`。
 3. 重启后会话右上角出现费用徽标；设置页出现「计费」分组；价格表能编辑保存。
 
 ## 第三方插件要点（给后续开发）

@@ -66,7 +66,7 @@ const html = `<!doctype html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>dsh-billing 图标预览</title>
+<title>dsh-meter 图标预览</title>
 <style>
   body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 24px; color: #1f2329; background: #fff; }
   h1 { font-size: 18px; } h2 { font-size: 15px; margin-top: 28px; border-bottom: 1px solid #e5e6eb; padding-bottom: 6px; }
@@ -79,7 +79,7 @@ const html = `<!doctype html>
 </style>
 </head>
 <body>
-<h1>dsh-billing 设置页图标预览</h1>
+<h1>dsh-meter 设置页图标预览</h1>
 <h2>货币/账单候选（新画，方案 A–F）</h2>
 <div class="grid">${candidates.map(c => cell(c.name, c.note, c.svg)).join('')}</div>
 <h2>现有 primitives 图标集（${icons.length} 个，看有没有能直接用的）</h2>

@@ -12,7 +12,7 @@ import { dirname, basename, resolve, sep, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { transform } from 'lightningcss'
 
-const ID = 'dsh-billing'
+const ID = 'dsh-meter'
 
 /** Externals resolved from the loader module table (platform modules). */
 const PLATFORM = [

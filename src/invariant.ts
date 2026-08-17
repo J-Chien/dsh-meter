@@ -1,5 +1,5 @@
 /**
- * dsh-billing invariant companion: the package folds billing from the
+ * dsh-meter invariant companion: the package folds billing from the
  * durable session log; the one relation worth asserting is that the fold
  * starts from the canonical empty state.
  */

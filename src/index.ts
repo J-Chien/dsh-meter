@@ -1,5 +1,5 @@
 /**
- * dsh-billing node half: the host billing plugin (settings namespace,
+ * dsh-meter node half: the host billing plugin (settings namespace,
  * session projection, and /billing/api routes). Re-exports the apply used by
  * the Loader.
  */
