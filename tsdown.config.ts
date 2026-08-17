@@ -37,7 +37,7 @@ function browserSourcePath(source: string, sourcemapPath: string): string {
   if (!source.startsWith('.')) return source
   const physical = resolve(dirname(sourcemapPath), source)
   const rel = relative(REPO_ROOT, physical).split(sep).join('/')
-  return rel.startsWith('scratch-billing/') ? `../../../${rel}` : source
+  return rel.startsWith('dsh-meter/') ? `../../../${rel}` : source
 }
 
 function sourceAssetPath(source: string, importer: string): string {

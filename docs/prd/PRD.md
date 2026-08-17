@@ -212,7 +212,7 @@
 
 - 纯逻辑测试：`tests/pure-check.ts`（`node tests/pure-check.ts` 直接跑，node ≥22.18 原生 type-stripping），覆盖计价、高峰/空闲、跨天窗口、分段取档（含边界）、高峰窗口自身分段、缓存写入独立计价、多币种、未登记、空 days=每天、精度。
 - 构建：`pnpm typecheck && pnpm build`。
-- 安装冒烟：`dsh plugin --profile web add ./scratch-billing` 后 `dsh web` 启动，验证入口/卡片/设置页/刷新/保存。
+- 安装冒烟：`npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter` 后 `npx @deepseek-ai/dsh web` 启动，验证入口/卡片/设置页/刷新/保存。
 - 回归重点：命名顺序、多币种、高峰多时段、分段多档、未登记显示、热更新。
 
 ---

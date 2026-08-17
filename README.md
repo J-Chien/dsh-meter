@@ -65,7 +65,7 @@ DeepSeek Harness 的**按会话计费插件**：在每个会话右上角展示�
 ## 目录结构
 
 ```
-scratch-billing/
+dsh-meter/
 ├── package.json            # dsh bundle + dsh.client 清单，npm scripts
 ├── cordis.patch.yml        # bundle 的 patch：插入 billing 插件行
 ├── pnpm-workspace.yaml     # 独立 workspace（自含 node_modules 解析）
@@ -136,8 +136,8 @@ pnpm dev:watch          # tsdown --watch：client 改动自动重建 → GUI 热
 ### 安装到 profile
 
 ```sh
-# 在包含本目录的上层执行
-dsh plugin --profile web add ./scratch-billing
+# 从 npm registry 安装（推荐）
+npx @deepseek-ai/dsh plugin --profile web add dsh-meter
 # 首次安装或 host 改动后重启 GUI
 npx @deepseek-ai/dsh web
 ```
@@ -148,15 +148,15 @@ npx @deepseek-ai/dsh web
 
 #### 方式 A：拷贝源码目录（推荐，便于以后改动）
 
-把 `scratch-billing/` 整个目录拷过去（**不要带 `node_modules/`**，到目标机器重新安装），然后：
+把 `dsh-meter/` 整个目录拷过去（**不要带 `node_modules/`**，到目标机器重新安装），然后：
 
 ```sh
-# 在包含 scratch-billing 的上层目录执行；目录名随意，如 ~/scratch-billing
-dsh plugin --profile web add ./scratch-billing
+# 在包含 dsh-meter 的上层目录执行；目录名随意，如 ~/dsh-meter
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter
 npx @deepseek-ai/dsh web
 ```
 
-`dsh plugin add` 会自动初始化 profile、`pnpm install`（`prepare` 脚本自动构建 `lib/`）、并把 `dsh-meter` 追加进 `dsh.profile.bundles`。
+`npx @deepseek-ai/dsh plugin add` 会自动初始化 profile、`pnpm install`（`prepare` 脚本自动构建 `lib/`）、并把 `dsh-meter` 追加进 `dsh.profile.bundles`。
 
 #### 方式 B：打包 tarball（对方只装、不改源码）
 
@@ -169,7 +169,7 @@ pnpm pack          # 产出 dsh-meter-0.2.6.tgz（含 lib/ + src/ + 全部构建
 把 `.tgz` 给目标机器，在任意目录执行：
 
 ```sh
-dsh plugin --profile web add ./dsh-meter-0.2.6.tgz
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-0.2.6.tgz
 npx @deepseek-ai/dsh web
 ```
 
@@ -180,13 +180,13 @@ npx @deepseek-ai/dsh web
 #### 跨平台注意事项
 
 - **路径都是 `~/`**：插件运行数据（`~/.dsh/sessions`、`~/.dsh/settings.yaml` 的 `billing-pricing`、`~/.dsh/storages`）由 dsh 按用户主目录解析，跨机器自动适配。唯一含**绝对路径**的是 profile 的 `package.json`/`pnpm-lock.yaml` 里安装时写入的 `link:` 或 `file:` 路径——**迁移后务必用方式 A/B 重新安装一次**，让 pnpm 重写成本机路径。
-- **Windows**：目标机器用 `%USERPROFILE%\.dsh\...`，安装命令相同（`dsh plugin --profile web add ./scratch-billing` 或 `.tgz` 路径）；`build` 脚本已是跨平台写法（`node -e fs.rmSync`，不依赖 `rm`）。
+- **Windows**：目标机器用 `%USERPROFILE%\.dsh\...`，安装命令相同（`npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter` 或 `.tgz` 路径）；`build` 脚本已是跨平台写法（`node -e fs.rmSync`，不依赖 `rm`）。
 - **`@deepseek-ai/*` 依赖从 npm registry 解析**（版本均为已发布的 `0.1.0-rc.6` / `schemastery ^3.18.1`），目标机器联网即可 `pnpm install`，无需任何内网/私有源。
 - 构建产物的 sourcemap 与注释不含本机绝对路径（仅 `lib/client.js` 内 `//#region` 折叠注释带源码路径，不影响运行）。
 
 #### 迁移后验证
 
-1. `dsh plugin --profile web add ...` 输出里能看到 `dsh-meter` 被加入 `dsh.profile.bundles`（查看 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 数组）。
+1. `npx @deepseek-ai/dsh plugin --profile web add ...` 输出里能看到 `dsh-meter` 被加入 `dsh.profile.bundles`（查看 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 数组）。
 2. 目标 `node_modules/dsh-meter/lib/` 存在 `index.js` + `client.js`。
 3. 重启后会话右上角出现费用徽标；设置页出现「计费」分组；价格表能编辑保存。
 

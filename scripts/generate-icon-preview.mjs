@@ -1,6 +1,6 @@
 /**
  * Dev helper: render the dsh primitives icon set plus hand-drawn money-icon
- * candidates into a single HTML preview page (scratch-billing/icon-preview.html)
+ * candidates into a single HTML preview page (dsh-meter/icon-preview.html)
  * so icon choices can be reviewed in a browser before any code changes.
  * Reads the primitives icon source from the main repo checkout.
  */

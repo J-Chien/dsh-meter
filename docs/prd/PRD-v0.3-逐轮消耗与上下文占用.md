@@ -38,7 +38,7 @@ node node_modules/.pnpm/tsdown@0.22.14_typescript@5.9.3/node_modules/tsdown/dist
 
 ### 遗留 / 未做
 
-1. **未 commit**：当前 git 工作区含 v0.3 全部改动（含 PRD/review 迁移 + 本 PRD），尚未提交。可用 `git status scratch-billing/` 查看。用户确认验证后再提交。
+1. **未 commit**：当前 git 工作区含 v0.3 全部改动（含 PRD/review 迁移 + 本 PRD），尚未提交。可用 `git status dsh-meter/` 查看。用户确认验证后再提交。
 2. **host 重启后冒烟待做**：host 进程（PID 35287）仍运行 v0.3 之前的 bundle——`/billing/api/turns` 返回 unknown method、`catalog` 无 `capability`。需重启 `dsh web`（`npx @deepseek-ai/dsh web`）后验证：卡片占用条/迷你图/详情面板拉全量、设置页能力行、`turns` 路由全量明细、`catalog` 带 `capability`。客户端 bundle 已确认上线（GUI 服务的 `client.js` 与最新构建 md5 一致）。
 3. **`lib/` 需用完整 build 重建**：上一会话只跑了 tsdown（基于旧 `lib/types`），host 产物一度是旧代码；**已用 `tsc -p tsconfig.build.json && tsdown` 重建为正确产物**，但新会话如需改动请走 `pnpm build`（= `rm -rf lib && tsc -p tsconfig.build.json && tsdown`）。
 4. **潜在待复核点**：详情面板打开时若 `getTurns` 失败仅保留卡片已有 50 条（按评审 S/R 设计的降级）；`maxTokens` 只有显式配置才进 `defaultMaxTokens`（设置页标注「（配置）」）；占用口径 = 最近一次请求输入（评审 R-1，非累计）。
@@ -46,7 +46,7 @@ node node_modules/.pnpm/tsdown@0.22.14_typescript@5.9.3/node_modules/tsdown/dist
 ### 建议新会话第一步
 
 ```sh
-cd scratch-billing && pnpm build && node tests/pure-check.ts
+cd dsh-meter && pnpm build && node tests/pure-check.ts
 # 再跑 GUI 冒烟（README 开发节）：host 改动需重启 dsh web，client 用 dev:watch
 ```
 
