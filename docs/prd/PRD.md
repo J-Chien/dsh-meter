@@ -128,7 +128,7 @@
 - **分桶计价**：未缓存输入、命中缓存输入、缓存写入、输出分别按对应单价计；`cacheWrite` 未配置（或缺省）时按 0 计。
 - **缓存写入用真实 token 数，不估算**：`cacheWriteTokens` 来自每次请求持久化的 usage；按「缓存存储时长」计费的模型（如按 token·小时）因日志无时长维度不建模。
 - **高峰窗口匹配**：支持跨天窗口（如 22:00–06:00）；`days` 空/缺省 = 每天，非空 = 按**窗口起始日**的星期几过滤（「周五 22:00–06:00」覆盖周六凌晨）；起止相同 = 全天。
-- **reasoningEffort 匹配**：effort 精确匹配的价格行优先于无 effort 的通用行（与数组顺序无关）；无 effort 的请求只命中通用行（`findPriceRow` 单一事实源）。
+- **reasoningEffort 匹配**：effort 精确匹配的价格行优先于无 effort 的通用行（与数组顺序无关）；无 effort 的请求只命中通用行（`findPriceRow` 单一事实源）。`peakModels` 的 key 在命中 effort 专属行时带第三段 effort（`provider/model/effort`），client 高峰标签据此查同一行。
 - **未登记计数**：无价格行的请求计入 `unpricedRequestCount`，不计入费用。
 - **多币种**：费用按 provider 币种分桶（`cost: {CNY, USD}`）。
 - **精度**：内部整数 `PRICE_PRECISION=100000`（1/100000 币种单位）存储，统计显示 2 位小数；设置页输入显示补零到两位小数、超过两位按实际值（整数运算）。
@@ -144,7 +144,7 @@
 
 - 折叠在统计会话总量的同时，**逐条记录每次带 `usage` 的 `assistant/message` 请求**为 `TurnCost`（`turn`/`step`/`time`/四类 token/`cacheHitRate`/`cost`/`currency`/`period`/`priced`），与会话总量**同源同事务**——总量没计的请求不进明细，两处数字永远对得上。
 - **未登记价格的请求也记录**（`priced: false`、`cost: 0`）：token 是真实的，UI 标「未登记」而非误导性的 `¥0.00`。
-- **有界投影**：`SessionBillingStats.turns` 按**轮次**保留最近 `RECENT_TURNS_CAP=50` 轮（`boundTurns` 纯函数，一个轮次的全部 step 不拆散）——投影每事件推完整 view，无界数组会使帧体积 O(N²) 增长。
+- **有界投影**：`SessionBillingStats.turns` 按**轮次**保留最近 `RECENT_TURNS_CAP=50` 轮（`boundTurns` 纯函数，一个轮次的全部 step 不拆散；**按轮号计数，多币种轮只占一个名额**）——投影每事件推完整 view，无界数组会使帧体积 O(N²) 增长。
 - **全量按需路由**：`/billing/api/turns` 载荷 `{ sessionId }` → 全量 `TurnCost[]`（升序），按 sessionId 取活日志**现场折叠**，无状态、无缓存。
 - **验收**：turns 顺序/条数/逐字段正确；超 50 轮截断方向正确且不拆散轮次；未登记请求 `priced:false` 且 `unpricedRequestCount` 同步 +1；无 `usage` 的消息不进明细；空日志 `turns: []`（测试见 `tests/pure-check.ts`）。
 
@@ -233,7 +233,7 @@ interface SessionBillingStats {
   unpricedRequestCount: number         // 未登记价格的请求数
   hasPeakConfig: boolean               // 驱动卡片空闲/高峰分栏
   currentModel: { provider: string; model: string; reasoningEffort?: string } | undefined
-  peakModels: string[]                 // 配置了高峰窗口的已用模型（"provider/model"，驱动高峰标签）
+  peakModels: string[]                 // 配置了高峰窗口的已用模型（"provider/model[/effort]"，effort 行带第三段，驱动高峰标签）
   cost: Record<string, number>                       // 每币种总费用
   byPeriod: Record<string, { offPeak: number; peak: number }>  // 每币种空闲/高峰拆分
   turns: TurnCost[]                    // 逐请求明细，按轮次有界保留最近 50 轮；全量走 turns 路由

@@ -47,6 +47,17 @@ function modelHasPeriods(table: PriceTable, provider: string, model: string, eff
   return row !== undefined && row.periods !== undefined && row.periods.length > 0
 }
 
+/**
+ * The `peakModels` key for one priced request. Provider ids contain no '/',
+ * and the effort segment (when the request priced an effort-specific row)
+ * carries the effort so the client can resolve the SAME row — effort rows
+ * take precedence over the generic row, so a bare `provider/model` key would
+ * let the client's peak tag look up the wrong (generic) row.
+ */
+function peakKey(provider: string, model: string, effort: string | undefined): string {
+  return effort !== undefined ? `${provider}/${model}/${effort}` : `${provider}/${model}`
+}
+
 /** Fold one committed session event into billing state. Pure over the log. */
 export function foldEvent(
   state: BillingFoldState,
@@ -127,7 +138,7 @@ export function foldEvent(
       stats.byPeriod[currency] = periodSplit
       if (modelHasPeriods(table, config.provider, config.model, config.reasoningEffort)) {
         stats.hasPeakConfig = true
-        const key = `${config.provider}/${config.model}`
+        const key = peakKey(config.provider, config.model, config.reasoningEffort)
         if (!stats.peakModels.includes(key)) stats.peakModels.push(key)
       }
     } else {
@@ -197,7 +208,7 @@ export function foldEvent(
         stats.byPeriod[currency] = periodSplit
         if (modelHasPeriods(table, provider, model, undefined)) {
           stats.hasPeakConfig = true
-          const key = `${provider}/${model}`
+          const key = peakKey(provider, model, undefined)
           if (!stats.peakModels.includes(key)) stats.peakModels.push(key)
         }
       } else {
@@ -222,17 +233,20 @@ export function foldBilling(
 /** Bound a `turns` array to the most recent RECENT_TURNS_CAP conversation
  *  TURNS, keeping every request of the kept turns (a turn with many
  *  tool-calling steps keeps all its requests). Truncation is per-turn so the
- *  turn-aggregated views see the same recent turns as the request view. */
+ *  turn-aggregated views see the same recent turns as the request view.
+ *  Turns are keyed by turn NUMBER alone: a turn that bills in several
+ *  currencies (one row per currency) still counts as ONE turn — keying by
+ *  turn:currency would silently halve the window for multi-currency
+ *  sessions. */
 export function boundTurns(turns: readonly TurnCost[]): TurnCost[] {
   if (turns.length <= RECENT_TURNS_CAP) return [...turns]
   const kept: TurnCost[] = []
-  const seenTurns = new Set<string>()
+  const seenTurns = new Set<number>()
   for (let i = turns.length - 1; i >= 0; i -= 1) {
     const t = turns[i]!
-    const key = `${t.turn}:${t.currency}`
-    if (!seenTurns.has(key)) {
+    if (!seenTurns.has(t.turn)) {
       if (seenTurns.size >= RECENT_TURNS_CAP) break
-      seenTurns.add(key)
+      seenTurns.add(t.turn)
     }
     kept.push(t)
   }

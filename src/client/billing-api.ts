@@ -19,9 +19,18 @@ export interface ProviderCatalogRow {
  *  hours never go stale after a save). */
 export const PRICING_UPDATED_EVENT = 'billing:pricing-updated'
 
-/** Notify mounted billing views that the price table was just saved. */
+/** Notify mounted billing views that the price table was just saved. Also
+ *  broadcasts across tabs (localStorage) so a SECOND tab's peak tag refetches
+ *  too — the window event only fires in the tab that saved, but a save can
+ *  change peak hours that every open tab judges by. */
 export function notifyPricingUpdated(): void {
   window.dispatchEvent(new CustomEvent(PRICING_UPDATED_EVENT))
+  try {
+    window.localStorage.setItem(PRICING_UPDATED_EVENT, String(Date.now()))
+  } catch {
+    // Storage can be unavailable (privacy mode / quota): the same-tab event
+    // above still covers the saver; other tabs just stay stale.
+  }
 }
 
 /** A route failure with the wire code. */

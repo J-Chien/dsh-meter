@@ -3,9 +3,9 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
-import { foldBilling, foldEvent, foldBillingBounded, EMPTY_STATS } from '../src/host/session-stats.ts'
+import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
 import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow } from '../src/shared.ts'
-import type { PriceTable } from '../src/shared.ts'
+import type { PriceTable, TurnCost } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
 import { billingFence } from '../src/host/fence.ts'
 
@@ -578,17 +578,76 @@ assert.equal(effectivePrice(effortTable, 'wpsai', 'm', undefined, Date.now()).in
 
 console.log('EFFORT PRECEDENCE CHECK PASSED')
 
+// --- an effort-specific row with peak windows: the peakModels key carries
+//     the effort so the client's peak tag resolves the SAME row ---
+const effortPeakTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [
+    { provider: 'wpsai', model: 'm', input: cnyPerMillion(1), output: cnyPerMillion(1), cacheInput: 0 },
+    { provider: 'wpsai', model: 'm', reasoningEffort: 'high', input: cnyPerMillion(5), output: cnyPerMillion(5), cacheInput: 0,
+      periods: [{ startHour: 9, endHour: 10, input: cnyPerMillion(6), output: cnyPerMillion(6), cacheInput: 0 }] },
+  ],
+}
+const effortPeakLog: SessionEvent[] = [
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'm', reasoningEffort: 'high' as never } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
+]
+const effortPeak = foldBilling(effortPeakLog, effortPeakTable)
+assert.equal(effortPeak.hasPeakConfig, true, 'effort row with periods sets hasPeakConfig')
+assert.deepEqual(effortPeak.peakModels, ['wpsai/m/high'], 'peak key carries the effort segment')
+// An effort-less request against the same table matches the generic row (no
+// periods) and must not contribute a peak key.
+const effortlessPeak = foldBilling([
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'm' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
+], effortPeakTable)
+assert.equal(effortlessPeak.hasPeakConfig, false, 'generic row has no periods')
+assert.deepEqual(effortlessPeak.peakModels, [], 'no peak key for the effort-less request')
+
+console.log('EFFORT PEAK KEY CHECK PASSED')
+
+// --- boundTurns counts TURN NUMBERS, not turn:currency pairs: a
+//     multi-currency turn occupies ONE of the 50 slots ---
+const multiCurrencyTurns = (count: number): TurnCost[] => {
+  const rows: TurnCost[] = []
+  for (let n = 1; n <= count; n += 1) {
+    rows.push({ turn: n, step: 1, time: n, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 5, cacheHitRate: 0, cost: 1, currency: 'CNY', period: 'off-peak', priced: true })
+    rows.push({ turn: n, step: 2, time: n, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 5, cacheHitRate: 0, cost: 1, currency: 'USD', period: 'off-peak', priced: true })
+  }
+  return rows
+}
+// 51 turns × 2 currencies = 102 rows: bounded to 50 TURNS = 100 rows, and
+// the oldest kept turn keeps BOTH of its currency rows.
+const boundMulti = boundTurns(multiCurrencyTurns(51))
+assert.equal(boundMulti.length, 100, '50 turns × 2 currency rows each')
+assert.equal(boundMulti[0]!.turn, 2, 'turns 2..51 kept (turn 1 dropped)')
+assert.equal(boundMulti[1]!.turn, 2, 'the kept turn keeps both currency rows')
+assert.equal(boundMulti[boundMulti.length - 1]!.turn, 51, 'newest turn preserved')
+
+console.log('TURN BOUND CURRENCY CHECK PASSED')
+
 // --- overnight window × days: days filter by the window's START day ---
-// 2026-08-21 is a Friday (getDay 5); 2026-08-22 a Saturday (getDay 6).
+// Built from a fixed DAY (Friday, getDay 5) in LOCAL time, so the assertions
+// hold on any host timezone (a fixed +08:00 literal would be a different
+// weekday in UTC-9 and later). The overnight rule reassigns the early-morning
+// half to the day the window OPENED.
+const fridayLocal = (hour: number, min = 0) => {
+  const d = new Date(2026, 7, 21, hour, min, 0, 0) // 2026-08-21 is a Friday
+  return d.getTime()
+}
+const saturdayLocal = (hour: number, min = 0) => {
+  const d = new Date(2026, 7, 22, hour, min, 0, 0) // 2026-08-22 is a Saturday
+  return d.getTime()
+}
 const fridayPeak = { startHour: 22, endHour: 6, days: [5], input: 1, output: 1, cacheInput: 1 }
-assert.equal(inPeakWindow(fridayPeak, at('2026-08-21T23:00:00+08:00')), true, 'Fri 23:00 in Friday window')
-assert.equal(inPeakWindow(fridayPeak, at('2026-08-22T02:00:00+08:00')), true, 'Sat 02:00 belongs to the Friday-opened window')
-assert.equal(inPeakWindow(fridayPeak, at('2026-08-22T23:00:00+08:00')), false, 'Sat 23:00 opens a Saturday window — not configured')
-assert.equal(inPeakWindow(fridayPeak, at('2026-08-21T12:00:00+08:00')), false, 'Fri noon outside the window')
+assert.equal(inPeakWindow(fridayPeak, fridayLocal(23)), true, 'Fri 23:00 in Friday window')
+assert.equal(inPeakWindow(fridayPeak, saturdayLocal(2)), true, 'Sat 02:00 belongs to the Friday-opened window')
+assert.equal(inPeakWindow(fridayPeak, saturdayLocal(23)), false, 'Sat 23:00 opens a Saturday window — not configured')
+assert.equal(inPeakWindow(fridayPeak, fridayLocal(12)), false, 'Fri noon outside the window')
 // start === end reads as "all day".
 const allDay = { startHour: 9, endHour: 9, input: 1, output: 1, cacheInput: 1 }
-assert.equal(inPeakWindow(allDay, at('2026-08-17T00:00:00+08:00')), true, 'start==end: midnight inside')
-assert.equal(inPeakWindow(allDay, at('2026-08-17T12:00:00+08:00')), true, 'start==end: noon inside')
+assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 0, 0, 0, 0).getTime()), true, 'start==end: midnight inside')
+assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 12, 0, 0, 0).getTime()), true, 'start==end: noon inside')
 
 console.log('OVERNIGHT DAYS CHECK PASSED')
 

@@ -35,8 +35,12 @@ export type BillingActionProps =
 
 /**
  * Whether any peak window of the session's peak-configured models covers
- * `timeMs`. Peak keys are "provider/model"; provider ids contain no '/', so
- * the first slash splits them. Returns false until the price table arrives.
+ * `timeMs`. Peak keys are "provider/model" or "provider/model/effort" (an
+ * effort-specific price row; provider ids and efforts are slash-free in
+ * practice), so the effort is carried in the third segment and used to look
+ * up the SAME row the host fold priced with — effort rows take precedence
+ * over the generic row (`findPriceRow`). Returns false until the table
+ * arrives.
  */
 function inPeakNow(peakModels: readonly string[], table: PriceTable | null, timeMs: number): boolean {
   if (table === null) return false
@@ -46,10 +50,11 @@ function inPeakNow(peakModels: readonly string[], table: PriceTable | null, time
     const slash = key.indexOf('/')
     if (slash <= 0) continue
     const provider = key.slice(0, slash)
-    const model = key.slice(slash + 1)
-    // Peak keys carry no effort; the effort-less (generic) row is the one
-    // whose windows the host fold also consulted for these keys.
-    const row = findPriceRow(table, provider, model, undefined)
+    const rest = key.slice(slash + 1)
+    const slash2 = rest.indexOf('/')
+    const model = slash2 > 0 ? rest.slice(0, slash2) : rest
+    const effort = slash2 > 0 ? rest.slice(slash2 + 1) : undefined
+    const row = findPriceRow(table, provider, model, effort)
     if (row?.periods === undefined) continue
     if (row.periods.some(p => inPeakWindow(p, timeMs))) return true
   }
@@ -115,6 +120,9 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   // A settings save may change peak WINDOW HOURS without changing the
   // peak-model set (peakKey unchanged → the fetch effect above does not
   // rerun). Refetch on the save event so the tag never judges by stale hours.
+  // The event fires in the saving tab; a save made in ANOTHER tab arrives as
+  // a localStorage broadcast (the same key, storage events) and refetches
+  // here too — cross-tab saves must not leave this tag on stale hours.
   useEffect(() => {
     let cancelled = false
     const onSaved = (): void => {
@@ -124,10 +132,15 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
         setPeakNow(inPeakNow(peakModels, table, Date.now()))
       }).catch(() => { /* keep the previous table and tag state */ })
     }
+    const onStorage = (event: StorageEvent): void => {
+      if (event.key === PRICING_UPDATED_EVENT) onSaved()
+    }
     window.addEventListener(PRICING_UPDATED_EVENT, onSaved)
+    window.addEventListener('storage', onStorage)
     return () => {
       cancelled = true
       window.removeEventListener(PRICING_UPDATED_EVENT, onSaved)
+      window.removeEventListener('storage', onStorage)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content
   }, [peakKey])

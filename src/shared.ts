@@ -405,9 +405,12 @@ export interface SessionBillingStats {
    */
   currentModel: { provider: string; model: string; reasoningEffort?: string } | undefined
   /**
-   * "provider/model" keys of the models this session used that configure
-   * peak windows. The client pairs these with the price table (and a timer)
-   * to show a "currently in peak" tag in the header without host round-trips.
+   * "provider/model[/effort]" keys of the models this session used that
+   * configure peak windows. A reasoning-effort-specific price row adds its
+   * effort as a third slash segment so the client can look up the SAME row
+   * the host fold priced with (effort rows win over the generic row — see
+   * `findPriceRow`). The client pairs these with the price table (and a
+   * timer) to show a "currently in peak" tag without host round-trips.
    */
   peakModels: string[]
   /**

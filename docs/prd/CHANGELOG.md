@@ -5,6 +5,16 @@
 
 ---
 
+### v0.3.17（V4 Pro 查漏补缺）
+
+- **effort 专属价行 + 高峰窗口的标签判定对齐（P1）**：`peakModels` 的 key 在命中 effort 专属价行时带第三段 effort（`provider/model/effort`）；client 高峰标签按 effort 查同一行（`findPriceRow` 优先 effort 行）。原实现 key 只带 `provider/model`、标签永远查通用行——effort 行配高峰窗口时标签永不亮、与卡片分栏矛盾。
+- **`boundTurns` 按轮号计数（P2）**：投影帧截断的「50 轮」原按 `turn:currency` 键控，多币种轮占 2 个名额，全多币种会话实际只留 ~25 轮；改为按轮号，多币种轮只占一个名额。
+- **OVERNIGHT DAYS 测试时区无关化（P2）**：断言时刻从固定 `+08:00` 字面量改为本机本地时间构造（2026-08-21 周五 / 08-22 周六），UTC+9 以东机器不再误挂。
+- **C3 修复扩展到多标签页（P2）**：设置页保存除同页事件外再写 localStorage 广播，其他标签页的徽标监听 `storage` 事件重取价格表——原只有保存的那一页高峰标签会更新。
+- **测试**：新增 EFFORT PEAK KEY（effort 行高峰 key、无 effort 请求不产 key）与 TURN BOUND CURRENCY（多币种 50 轮截断）两组检查。
+
+---
+
 ### v0.3.16（审查修复批次二，review-0818）
 
 - **压缩摘要调用计入费用（P1）**：`compaction/summary` 携带的 `usage`（摘要一次性调用的真实 provider 用量，不产生 `assistant/message`）此前完全不计费——恰恰是最贵会话里的大头。现在计入会话费用总额与空闲/高峰拆分，并在卡片压缩历史行展示「摘要花费」；其 token 不进会话 token 桶（避免一次性重读稀释缓存命中率语义），累计在 `compactions.tokens` / `compactions.cost`。投影 schema 同步。
