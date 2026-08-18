@@ -1,10 +1,11 @@
 /**
- * Cross-entry "locate a model in the settings page" request. The header card
- * (BillingAction) queues a target before opening settings; the settings
- * section consumes it once it has rendered, then expands the provider and
- * scrolls the model row into view. Module-level because the two entries
- * share no store seat in this third-party bundle; a DOM event covers the
- * already-mounted case, the queue covers a section that mounts afterwards.
+ * Cross-entry "locate a model in the settings card" request. The header card
+ * (BillingAction) queues a target before opening the settings panel; the
+ * settings card consumes it once it has rendered (the user opens the plugins
+ * tab), then expands the provider and scrolls the model row into view.
+ * Module-level because the two entries share no store seat in this
+ * third-party bundle; a DOM event covers the already-mounted case, the queue
+ * covers a card that mounts afterwards.
  */
 
 /** One locate request: expand `provider` and reveal its `model` row. */

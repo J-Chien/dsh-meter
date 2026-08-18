@@ -50,6 +50,9 @@ body {
   --billing-text-primary: var(--dsw-alias-label-primary);
   --billing-text-secondary: var(--dsw-alias-label-secondary);
   --billing-text-tertiary: var(--dsw-alias-label-tertiary);
+  --billing-text-dimmed: var(--dsw-alias-label-dimmed);
+  --billing-text-error: var(--dsw-alias-label-error);
+  --billing-brand-primary: var(--dsw-alias-brand-primary);
   /* The dsh theme currently has no --dsw-font-mono; the fallback keeps the
    * numeric face stable until one lands upstream. */
   --billing-font-mono: var(--dsw-font-mono, ui-monospace, 'SF Mono', monospace);

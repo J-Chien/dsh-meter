@@ -2,6 +2,11 @@
  * Client-side fetch wrapper over the /billing/api JSON routes (mirrors the
  * reference third-party plugin's own route client). The host fences these
  * to loopback; the client is served from that same host.
+ *
+ * The price table itself does NOT transit here: reads/writes ride the
+ * harness's native settings RPC via a `settingsScope` binding (see
+ * `pricing-scope.ts`). These routes remain for what the settings RPC does
+ * not cover: the live LLM catalog and on-demand session folds.
  */
 import type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost } from '../shared.ts'
 
@@ -12,25 +17,6 @@ export interface ProviderCatalogRow {
   id: string
   name: string
   models: { id: string; name: string; capability?: ModelCapability }[]
-}
-
-/** Window event announcing a price-table save (the settings page dispatches
- *  it; the header action listens and refetches so the peak tag's window
- *  hours never go stale after a save). */
-export const PRICING_UPDATED_EVENT = 'billing:pricing-updated'
-
-/** Notify mounted billing views that the price table was just saved. Also
- *  broadcasts across tabs (localStorage) so a SECOND tab's peak tag refetches
- *  too — the window event only fires in the tab that saved, but a save can
- *  change peak hours that every open tab judges by. */
-export function notifyPricingUpdated(): void {
-  window.dispatchEvent(new CustomEvent(PRICING_UPDATED_EVENT))
-  try {
-    window.localStorage.setItem(PRICING_UPDATED_EVENT, String(Date.now()))
-  } catch {
-    // Storage can be unavailable (privacy mode / quota): the same-tab event
-    // above still covers the saver; other tabs just stay stale.
-  }
 }
 
 /** A route failure with the wire code. */
@@ -61,17 +47,6 @@ async function call<T>(method: string, payload: Record<string, unknown>): Promis
     )
   }
   return parsed.value as T
-}
-
-/** Read the current price table. */
-export async function getPriceTable(): Promise<PriceTable> {
-  const value = await call<{ value: PriceTable }>('settings.get', {})
-  return value.value
-}
-
-/** Replace the price table. */
-export async function updatePriceTable(value: PriceTable): Promise<void> {
-  await call<{ ok: true }>('settings.update', { value })
 }
 
 /** Read the live provider catalog (registered providers + their models). */

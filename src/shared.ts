@@ -4,6 +4,10 @@
  * halves can import it without crossing the bundle purity gate.
  */
 
+/** The settings namespace carrying the price table (host registers it, the
+ *  client binds a `settingsScope` to it — keep both sides on this const). */
+export const PRICING_NAMESPACE = 'billing-pricing'
+
 /**
  * One input/output-length price tier (e.g. z.ai GLM tiered billing).
  * A request's TOTAL input length (uncached + cache read + cache write) and

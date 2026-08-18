@@ -16,7 +16,7 @@ hover/点击展开的统计卡片（token 用量、费用、逐轮消耗）：
 | ![统计卡片-多轮价格展示](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/03-card-hover.png) | ![逐轮消耗详情面板](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/04-detail-turns.png) |
 |---|---|
 
-设置页（GUI 编辑价格表）：
+设置卡片（GUI 编辑价格表；截图为 rc.6 时代的独立设置页版式，rc.7 起位于 设置 →「插件」配置页）：
 
 | ![设置页-分段区间计费](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/05-settings-tiered.png) | ![设置页-高峰时段定价](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/06-settings-peak.png) |
 |---|---|
@@ -38,7 +38,7 @@ hover/点击展开的统计卡片（token 用量、费用、逐轮消耗）：
 - **费用**：按币种分行；配置了高峰时段时额外展示「空闲时段」「高峰时段」两行拆分。
 - **上下文占用条（压缩预测）**：最近一次请求输入 ÷ provider 声明的输入+输出总窗口（来自日志 `request/context`），显示进度条 + `已用 / 窗口` + `输出上限`；≥85% 预警「接近上限，建议开新会话」。含 80% 压缩触发参考线、压缩历史（已压缩 N 次 · 释放 X tokens · 摘要花费——压缩摘要调用是真实 provider 请求，其费用计入总额）与压缩预估（快照差分增速外推「约 N 轮后触发压缩」，余量可心算验证）。任一数据缺省则不显示（不估算）。
 - **每轮新增迷你图**：每轮一根新增占用 token 竖条（快照差分口径，免疫缓存失效；最老轮在左、从左到右 3px 等距排列；**第 1 轮的新增 = 其整轮快照**——它的前驱是空上下文，首轮装载的所有内容都是新增），高峰轮暖色着色，hover 出统一 tooltip；按卡片实际宽度自适应轮数。
-- 卡片头部：**刷新**（按最新价格重算当前会话）+ **查看详情**（打开逐轮消耗面板）+ **齿轮设置**（打开计费设置页并自动定位到当前模型）。
+- 卡片头部：**刷新**（按最新价格重算当前会话）+ **查看详情**（打开逐轮消耗面板）+ **齿轮设置**（打开设置面板并排队定位请求；计费卡片挂载时自动展开并定位当前模型——rc.7 的设置面板无导航 API，「插件」页需手动点开）。
 
 ### 逐轮消耗详情面板
 
@@ -47,13 +47,15 @@ hover/点击展开的统计卡片（token 用量、费用、逐轮消耗）：
 - 明细表按轮次倒序；「按请求」视图为可折叠轮次分组（默认折叠）；未登记请求标「未登记」。
 - 打开时拉取**全量**逐轮明细（投影帧只按轮次有界保留最近 50 轮）。
 
-### 设置页（GUI 编辑价格）
+### 设置卡片（GUI 编辑价格）
+
+设置面板 →「插件」配置页 →「计费价格配置」卡片（rc.7 原生 `settings.plugin.item` 槽位，按 `billing-pricing` 命名空间注册；读写走原生 settings RPC 的 `settingsScope` 绑定，保存后 host 自动重算所有会话、各标签页自动同步）。
 
 - **按已注册的 provider 分组**（从 `ctx.llm` 实时读取目录，默认全部折叠），**无需手动添加模型**；模型名旁显示真实上下文窗口/输出上限能力（目录数据，非估算）。
 - 每个 provider 独立币种（CNY/USD）；每个模型编辑四类价格：输入（缓存命中）/ 输入（缓存未命中）/ 缓存写入 / 输出。
 - **分段计费（开关）**：开启后默认价格成为「区间 1」，可继续添加分段；每段 = 输入/输出长度区间（K tokens）+ 同一套四价；无区间匹配时落到默认段兜底。
 - **高峰时段**：每个模型可配多个高峰窗口（起止时钟样式 + 各自价格）；窗口内按索引复用模型的分段区间（只读展示区间记号），价格单独编辑；不配高峰则始终按空闲价计。
-- 价格输入自动补零到两位小数（内部高精度整数存储，无浮点误差）；保存后 host 自动重算所有会话。
+- 价格输入自动补零到两位小数（内部高精度整数存储，无浮点误差）；写入被宿主拒绝（校验失败/版本冲突）时在保存按钮旁提示。
 
 ### 计价核心
 
@@ -74,11 +76,13 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-meter
 npx @deepseek-ai/dsh web
 ```
 
+> 版本要求：v0.3.18 起 peer 依赖为 `^0.1.0-rc.7`，请搭配 deepseek-harness **0.1.0-rc.7** 及以上；仍停留在 rc.6 的环境请使用 dsh-meter 0.3.16。
+
 也可以从源码目录或 tarball 安装：
 
 ```sh
 npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter            # 源码目录
-npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-0.3.16.tgz  # pnpm pack 产物
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-0.3.18.tgz  # pnpm pack 产物
 ```
 
 `plugin add` 会自动初始化 profile、`pnpm install`（`prepare` 脚本自动构建 `lib/`）并把 `dsh-meter` 追加进 `dsh.profile.bundles`。
@@ -89,9 +93,9 @@ npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-0.3.16.tgz  # pnpm pac
 
 - **迁移后务必重新安装一次**——profile 的 `package.json`/`pnpm-lock.yaml` 里写有本机 `link:`/`file:` 绝对路径，重装让 pnpm 重写为目标机路径。
 - 运行数据（`~/.dsh/sessions`、`~/.dsh/settings.yaml` 的 `billing-pricing`）按用户主目录解析，跨机器/跨平台（含 Windows）自动适配。
-- `@deepseek-ai/*` 依赖全部从 npm registry 解析（均为已发布的 `0.1.0-rc.6`），无需内网/私有源。
+- `@deepseek-ai/*` 依赖全部从 npm registry 解析（均为已发布的 `0.1.0-rc.7`），无需内网/私有源。
 
-**验证**：目标 `node_modules/dsh-meter/lib/` 存在 `index.js` + `client.js`；重启后会话右上角出现费用徽标；设置页出现「计费」分组，价格表能编辑保存。
+**验证**：目标 `node_modules/dsh-meter/lib/` 存在 `index.js` + `client.js`；重启后会话右上角出现费用徽标；设置面板「插件」配置页出现「计费价格配置」卡片，价格表能编辑保存。
 
 ## 开发
 
@@ -124,10 +128,10 @@ pnpm dev:watch          # tsdown --watch：client 改动自动重建 → GUI 热
 
 | 半区 | 机制 |
 |---|---|
-| Host | `ctx.settings` 命名空间 `billing-pricing`（内置默认表为 `base` 层）· `ctx.sessionProjections` 的 `billing` 单元（纯函数折叠会话日志）· fenced `/billing/api` 路由（`settings.get` / `settings.update` / `catalog` / `refresh` / `turns`）· 通过 `ctx.llm` 读取 provider/模型目录 |
-| Client | `conversation.session.header.actions` 槽位（常驻入口）· `settings.section` 槽位（设置页）· `useProjection('billing')` 读 host 计算结果 · 自建 hover+click popover · `/billing/api` fetch 客户端 |
+| Host | `ctx.settings` 命名空间 `billing-pricing`（内置默认表为 `base` 层）· `ctx.sessionProjections` 的 `billing` 单元（纯函数折叠会话日志）· fenced `/billing/api` 路由（`catalog` / `refresh` / `turns`）· 通过 `ctx.llm` 读取 provider/模型目录 |
+| Client | `conversation.session.header.actions` 槽位（常驻入口）· `settings.plugin.item` 原生设置卡片（key=`billing-pricing`）· `ctx.settingsScope.bind` 读写价格表（原生 settings RPC）· `useProjection('billing')` 读 host 计算结果 · 自建 hover+click popover · `/billing/api` fetch 客户端 |
 
-数据流：**会话日志 → host 纯函数折叠 → `billing` 投影单元 → `session/projection` 推送帧 → 客户端 `useProjection` → 卡片渲染**。价格表变更时投影单元重新注册，所有会话按最新价格重算。
+数据流：**会话日志 → host 纯函数折叠 → `billing` 投影单元 → `session/projection` 推送帧 → 客户端 `useProjection` → 卡片渲染**。价格表经原生 settings RPC 保存后，host 的 `scope.watch` 重新注册投影单元，所有会话按最新价格重算，各绑定端（含其他标签页）经 `settings/document-updated` 自动重播种。
 
 ### 内置默认价格
 
@@ -162,10 +166,11 @@ dsh-meter/
 │   │   ├── fence.ts        # 路由 loopback 信任围栏（DNS-rebinding 防御）
 │   │   └── context-types.ts # host Context 结构型声明（settings/webServer/sessions/llm）
 │   └── client/             # ── Client 半区（UI）──
-│       ├── index.ts        # client 插件：注册头部入口 + 设置页
+│       ├── index.ts        # client 插件：attach settingsScope + 注册头部入口 + 原生设置卡片
+│       ├── pricing-scope.ts # billing-pricing 命名空间的 settingsScope 共享绑定（徽标/卡片共用）
 │       ├── BillingAction.tsx   # 入口徽标 + hover/click popover + 统计卡片
 │       ├── BillingTurnsPanel.tsx # 逐轮消耗详情面板（图表 + 明细表）
-│       ├── BillingSettings.tsx # 设置页：provider 分组 + 币种 + 分段 + 多高峰时段
+│       ├── BillingSettings.tsx # 原生设置卡片：provider 分组 + 币种 + 分段 + 多高峰时段
 │       ├── BillingLabel.tsx    # 共享字段标签（主词 + 小字括号 hint）
 │       ├── Tooltip.tsx         # 统一 tooltip（替代原生 title）
 │       ├── *.module.css        # 各组件样式（只消费 --billing-* token）
@@ -183,8 +188,9 @@ dsh-meter/
 
 ## 第三方插件要点（给后续开发）
 
-- **不动主仓库**：所有能力都走现有扩展点（`ctx.settings`、`ctx.sessionProjections`、`conversation.session.header.actions`、`settings.section`、`ctx.webServer` 自建路由、`ctx.llm` 目录）。
-- **设置页写价格不走 settings RPC**：内置 settings RPC 有写死的暴露白名单，第三方命名空间不会暴露；因此仿 `dsh-better-sidebar` 自建 fenced `/billing/api` 路由读写。
+- **不动主仓库**：所有能力都走现有扩展点（`ctx.settings`、`ctx.sessionProjections`、`conversation.session.header.actions`、`settings.plugin.item`、`ctx.settingsScope`、`ctx.webServer` 自建路由、`ctx.llm` 目录）。
+- **设置走原生 settings RPC（rc.7 起）**：rc.6 及以前内置 settings RPC 有写死的暴露白名单，第三方命名空间不会暴露，因此当时仿 `dsh-better-sidebar` 自建了 fenced `/billing/api/settings.*` 路由；rc.7 移除白名单并新增 `settingsScope` 绑定 + `settings.plugin.item` 卡片槽位，价格表读写已迁移——自建路由只保留 `catalog`/`turns`/`refresh`（活目录与现场折叠，settings RPC 不覆盖）。`settingsScope` binder 经调用方 fiber 解析 `connection`/`remote`，所以插件的 cordis `inject` 与 `dsh.client.inject` 清单都要带上它们。
+- **设置卡片自持有 chrome**：内置 `PluginCard`/`CardForm` 未对外导出（值不可导入），折叠头/保存栏/只读态需自实现；写入被拒（宿主校验/版本冲突）时 `scope.set` 静默重读而不抛错，要比对 user 层确认落盘。
 - **client bundle 必须是纯平台模块**：只能 import 平台表内的包（react / react-dom / jsx-runtime / `@deepseek-ai/dsh-client-ui-primitives` 等），否则 client bundle purity gate 报错。类型可用 `import type {}`（构建时擦除）。
 - **Context 用结构型声明**：第三方包不在主仓库单例 cordis 内，收不到 `declare module` 增强；`context-types.ts` 里按需声明用到的服务面。
 - **价格数据模型变更**要同步六处联动点——清单见 [docs/prd/PRD.md §6](docs/prd/PRD.md#6-数据模型)。
@@ -204,7 +210,8 @@ dsh-meter/
 
 - host 改动无热重载，需重启（框架限制）。
 - 高峰时段按**运行机器本地时区**判定：host 折叠用宿主机时区、client 标签用浏览器时区；两者不同时，费用归属与高峰标签可能不一致。
-- `/billing/api` 的 fence 只认 loopback Host（另加 `sec-fetch-site` / JSON content-type 的 CSRF 检查）：`dsh web` 绑定 0.0.0.0 供局域网访问时，billing API 一律 403（DNS-rebinding 防御的取舍）。
+- `/billing/api` 的 fence 只认 loopback Host（另加 `sec-fetch-site` / JSON content-type 的 CSRF 检查）：`dsh web` 绑定 0.0.0.0 供局域网访问时，billing API 一律 403（DNS-rebinding 防御的取舍）。同理，远程/非本机浏览器上 settings RPC 是特权通道——设置卡片退化为只读/不可用（禁保存），徽标高峰标签不显示。
+- **齿轮不能直达计费卡片**：rc.7 的设置面板打开态/激活 tab 均为组件本地 state，无导航 API——齿轮只能打开设置面板，「插件」页需用户手动点开；定位请求排队，卡片挂载时消费（展开并滚动到当前模型）。
 - **首次保存后内置默认表更新不再生效**：设置页保存的是全量表，user 层整表覆盖内置 base（dsh-settings 数组合并是 wholesale 语义）——插件升级带来的内置默认价格修正/新增模型，对保存过价格表的用户不再自动可见；需要时可手动在设置页补配。
 - 设置页编辑器只覆盖目录内模型的无 effort 价格行；目录外模型与 reasoningEffort 价格行不可编辑，但保存时会被**原样保留**（不会丢失）。若某 provider 未列目录，其模型不出现在编辑器（已配置的价格仍参与计价）。
 - 「未登记价格」只区分「全部未登记 vs 部分登记」：部分登记时徽标显示已登记部分费用，不提示存在未登记部分。

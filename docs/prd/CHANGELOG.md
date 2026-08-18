@@ -5,6 +5,18 @@
 
 ---
 
+### v0.3.18（deepseek-harness rc.7 适配：设置迁移原生机制）
+
+- **设置页迁移为原生设置卡片（P0，rc.7 新机制）**：独立 `settings.section` 计费页下线，改为按命名空间 `billing-pricing` 键控注册 `settings.plugin.item` 卡片（`@deepseek-ai/dsh-client-ui-settings-plugins`），出现在设置面板的「插件」配置页。卡片 chrome **1:1 对齐内置 `PluginCard`**（折叠头 = 名称 + 描述 + 「未保存」pill + 箭头；正文 = 只读提示 + 编辑区 + 失败/放弃/保存页脚；不可用命名空间整卡不渲染）——内置 `PluginCard`/`CardForm` 不对外开放（值不可导入），按其发布实现复刻（新增 dirty 追踪与放弃按钮，语义同款：任何编辑置脏、保存/放弃清脏）。
+- **价格表读写迁移原生 settings RPC**：rc.7 移除了 settings RPC 的命名空间写死白名单并新增 client 侧 `settingsScope` 绑定，自建 `/billing/api/settings.get|update` 路由删除。编辑器初始化读 scope 快照（schema 校验过的生效表），保存改为 `scope.set('providers'|'models', …)` 逐字段 mutate（revision fencing；宿主拒绝时静默重读，通过比对 user 层 JSON 确认落盘，未落盘报「写入被拒绝」）。
+- **跨端同步原生化**：删除 `billing:pricing-updated` window 事件 + localStorage 广播——保存提交 Host 文档后，`settings/document-updated` 让所有绑定端（含其他标签页）自动重播种；host 侧既有 `scope.watch` → 投影重挂载 → 全会话重算链路不变。徽标高峰标签从「fetch + 事件监听」改为订阅共享 scope 绑定（新增 `src/client/pricing-scope.ts`，apply 时 attach 一次，徽标/卡片共用）。
+- **远程/非本机浏览器语义**：scope 为 `unavailable`/只读（设置 RPC 是特权通道）——卡片显示只读/不可用提示、禁用保存；徽标高峰标签不显示（与原 fence 403 表现一致）。`/billing/api` 其余路由（`catalog`/`turns`/`refresh`）保留 loopback fence 不变。
+- **齿轮入口降级说明**：rc.7 的设置面板打开态/激活 tab 是组件本地 state，无导航 API——齿轮只能打开设置面板，无法直达「插件」页或展开卡片；locate 请求改为排队，卡片挂载（用户打开插件页）时消费并展开定位当前模型。
+- **工程**：12 个 `@deepseek-ai/dsh-*` 依赖 `^0.1.0-rc.6` → `^0.1.0-rc.7`；peer 新增 `dsh-client-connection`/`dsh-api-remotes`/`dsh-client-ui-settings-plugins`，devDep 新增 settings-plugins（类型擦除导入）；`dsh.client.inject` 清单新增 connection + api-remotes（settingsScope binder 经调用方 fiber 解析这两个服务）；命名空间字符串收敛为 `shared.ts` 的 `PRICING_NAMESPACE` 常量（host/client 单一事实源）；cordis `inject` 增至 `['slots','locale','connection','remote','settingsScope']`；client bundle require 面仍为纯平台模块（react/react-dom/ui-primitives）。补齐 v0.3.17 漏升的 package.json 版本号（0.3.16 → 0.3.18；v0.3.17 变更已全部包含）。
+- **rc.7 其余变更与本插件的关系**：DeepSeek 模型新增 `low` 推理强度（默认仍 `high`）——effort 专属价行按 `provider/model/effort` 字符串匹配，天然兼容，无需改动；逐包 diff 确认其余消费面（投影注册、图标导出、`dsh.client` 清单契约）零破坏。
+
+---
+
 ### v0.3.17（V4 Pro 查漏补缺）
 
 - **effort 专属价行 + 高峰窗口的标签判定对齐（P1）**：`peakModels` 的 key 在命中 effort 专属价行时带第三段 effort（`provider/model/effort`）；client 高峰标签按 effort 查同一行（`findPriceRow` 优先 effort 行）。原实现 key 只带 `provider/model`、标签永远查通用行——effort 行配高峰窗口时标签永不亮、与卡片分栏矛盾。

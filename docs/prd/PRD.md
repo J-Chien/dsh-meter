@@ -1,6 +1,6 @@
 # dsh-meter 产品需求文档（PRD）
 
-> 状态：**已实现（v0.3.16）** · 最近更新：见文末
+> 状态：**已实现（v0.3.18）** · 最近更新：见文末
 > 本文档沉淀**当前有效**的产品需求与决策，供后续迭代/评审使用。逐版本变更记录见 [CHANGELOG.md](CHANGELOG.md)（新版本条目追加在其最上方）；已归档的迭代设计稿在 [archive/](archive/)。
 
 ---
@@ -92,13 +92,13 @@
 
 卡片头部：
 - 标题「本会话计费」+ 标题旁**小刷新按钮**（重算当前会话）
-- 右上角**齿轮设置**按钮（打开计费设置页；已知当前模型时**自动展开对应 provider 并滚动定位到该模型**——下方空间足够则模型显示在视口第一行，否则保持在底部，不强行留白）
+- 右上角**齿轮设置**按钮（打开设置面板并排队 locate；计费卡片挂载时消费——**展开卡片与对应 provider、滚动定位到该模型**——下方空间足够则模型显示在视口第一行，否则保持在底部，不强行留白。rc.7 无设置面板导航 API，无法直接选中「插件」页，需用户手动点开）
 
 - **验收**：字段顺序、命名、括号小字、币种分行、高峰分栏条件均正确；模型行显示正确；齿轮跳转后模型被展开并定位；缓存写入行为 0 时不显示。
 
 ### FR-3 价格配置（设置页）
 
-- **入口**：设置侧栏新增「计费」页（复用 `settings.section` 槽位）。
+- **入口**：设置面板「插件」配置页内的计费设置卡片（rc.7 原生 `settings.plugin.item` 槽位，按命名空间 `billing-pricing` 键控注册；卡片自持有全部 chrome——折叠头、保存栏、只读/不可用态）。
 - **按 provider 分组**：从 `ctx.llm.listProviders()` 读取已注册 provider 及其模型目录，分组折叠展开（**默认全部折叠**；折叠/展开控件为标题右侧的箭头图标按钮，整行可点击切换）；**无手动添加模型**。
 - **每 provider 币种**：CNY / USD，独立选择；单位说明随币种显示（`单位：¥/百万Tokens`）。
 - **每模型四价**：输入（缓存命中）、输入（缓存未命中）、缓存写入、输出，单位"元/百万 token"；输入框显示**自动补零到两位小数**（`10` → `10.00`），**超过两位小数按实际值显示**（`10.155` 不变）。
@@ -115,8 +115,8 @@
   - 高峰每段的区间用**区间记号**展示：`输入长度 [0, 32)`、`输出长度 [0, 0.2)`、`[0.2+)`——下限缺省 = 0、上限缺省 = `+`，无约束的维度不显示、全无约束的默认段显示「全部」。
   - 新增/删除分段时高峰窗口**同步增删**对应段，结构始终与空闲时段**完全一致**。
   - 不配任何高峰窗口 → 始终按空闲/默认价计。
-- **保存**：写回设置存储，host 自动重算所有会话。
-- **从卡片定位**：悬浮卡片点齿轮进入设置页时，若会话已知当前模型，自动展开其 provider 分组并滚动定位该模型行（`data-billing-model` 定位 + 视口自适应：下方空间足够则置顶，否则靠底显示）。
+- **保存**：经原生 `settingsScope` 按字段写入（`providers` / `models` 两个顶层字段，revision fencing；写入被宿主拒绝时静默重读，通过比对 user 层确认落盘），host `scope.watch` 触发投影重挂载、自动重算所有会话。
+- **从卡片定位**：悬浮卡片点齿轮打开设置面板时，若会话已知当前模型，locate 请求排队；计费卡片挂载（用户打开「插件」配置页）时消费——展开卡片与 provider 分组并滚动定位该模型行（`data-billing-model` 定位 + 视口自适应：下方空间足够则置顶，否则靠底显示）。
 - **未登记语义**：未填任何价格/时段/分段的新模型在保存时不写入（保持"未登记"）。
 - **验收**：分组正确、币种独立、四价可编辑、分段开关正确、默认价=第一段、多分段可增删且连续、区间布局不换行、高峰时段同步增减分段、高峰价格按索引对齐、预填正确、保存后全局重算。
 
@@ -303,13 +303,13 @@ interface TurnSummary extends TurnCost { requests: number }
 |---|---|
 | Host 计费 | `ctx.sessionProjections` 的 `billing` 投影单元，纯函数折叠会话日志 |
 | Host 价格配置 | `ctx.settings` 命名空间 `billing-pricing`（内置表为 base） |
-| Host API | fenced `/billing/api` 路由：`settings.get/update`、`catalog`（读 `ctx.llm`，含模型能力）、`refresh`、`turns`（全量逐轮明细） |
+| Host API | fenced `/billing/api` 路由：`catalog`（读 `ctx.llm`，含模型能力）、`refresh`、`turns`（全量逐轮明细） |
 | Client 展示 | `conversation.session.header.actions`（入口）+ 自建 hover/click popover + `useProjection('billing')` |
-| Client 设置 | `settings.section`（计费页）+ `/billing/api` fetch |
+| Client 设置 | 原生设置卡片：`settings.plugin.item`（key=`billing-pricing`）+ `ctx.settingsScope.bind` 读写价格表（原生 settings RPC，revision  fencing） |
 | 构建 | tsc（lib/types）+ tsdown 双 bundle（lib/index.js host、lib/client.js 浏览器） |
 
 关键约束（重要）：
-- **settings RPC 有写死白名单**：第三方命名空间不暴露，因此自建 `/billing/api` 路由读写（仿 `dsh-better-sidebar`）。
+- **设置走原生 settings RPC**：rc.6 及以前 settings RPC 有写死白名单（第三方命名空间不暴露），故自建 `/billing/api` 读写（仿 `dsh-better-sidebar`）；rc.7 起白名单移除、新增 `settingsScope` 绑定与 `settings.plugin.item` 卡片槽位，价格表读写已迁移到原生路径（保存→`scope.watch`→投影重挂载全会话重算→各端 document-updated 重播种，均为原生联动）。自建路由只保留 settings RPC 不覆盖的：`catalog`（活目录）、`turns`/`refresh`（现场折叠）。
 - **client bundle 纯平台模块**：只能 import 平台表内包，类型用 `import type` 擦除。
 - **host 无热重载**：host 改动需重启；client 改动 `pnpm dev:watch` 热更新。
 
@@ -337,7 +337,7 @@ interface TurnSummary extends TurnCost { requests: number }
 
 ## 10. 迭代记录与后续候选
 
-逐版本变更记录已拆分为独立文档：**[CHANGELOG.md](CHANGELOG.md)**（最新在前，v0.1 → v0.3.15）。
+逐版本变更记录已拆分为独立文档：**[CHANGELOG.md](CHANGELOG.md)**（最新在前，v0.1 → v0.3.18）。
 v0.3 迭代的原始设计与评审记录已归档至 [archive/PRD-v0.3-逐轮消耗与上下文占用.md](archive/PRD-v0.3-逐轮消耗与上下文占用.md)。
 
 ### 后续候选（未排期）
@@ -347,10 +347,11 @@ v0.3 迭代的原始设计与评审记录已归档至 [archive/PRD-v0.3-逐轮�
 - [ ] 费用趋势图（按天/按模型）
 - [ ] 更多币种与汇率换算
 - [ ] 模型按 reasoning effort 细分价格档
+- [ ] 设置面板内深链到具体插件卡片（齿轮 → 插件页 → 展开计费卡片）：rc.7 无导航 API（面板打开态/激活 tab 均为组件本地 state），当前齿轮只能打开面板 + 排队 locate（卡片挂载时消费）；待上游开放
 - [ ] 终端/无头模式的费用输出
 - [ ] 费用导出（CSV/JSON）
 - [ ] 缓存存储（按时长计费，如每百万tokens/小时）建模——需引入会话时长维度，当前无法从日志推导
 
 ---
 
-*最近更新：文档结构调整——迭代记录拆分至 [CHANGELOG.md](CHANGELOG.md)，v0.3 迭代 PRD 归档至 archive/；代码最新版本 v0.3.16（审查修复批次二，见 [../review/review-0818.md](../review/review-0818.md)）。*
+*最近更新：v0.3.18 适配 deepseek-harness `0.1.0-rc.7`——设置迁移原生机制（`settings.plugin.item` 卡片 + `settingsScope` 读写，自建 settings 路由下线，见 [CHANGELOG.md](CHANGELOG.md)）。*

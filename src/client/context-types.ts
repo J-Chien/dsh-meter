@@ -20,7 +20,35 @@ export interface ClientLocaleService {
 }
 
 /** Client plugin context (structural subset of the runtime's ClientContext). */
-export type ClientContext = Omit<Context, 'slots' | 'locale'> & {
+export type ClientContext = Omit<Context, 'slots' | 'locale' | 'settingsScope'> & {
   slots: ClientSlotsService
   locale: ClientLocaleService
+  settingsScope: ClientSettingsScopeBinder
+}
+
+/** Snapshot of one settings-namespace binding (structural mirror of the
+ *  runtime's SettingsScopeSnapshot; only the members this plugin uses). */
+export interface ClientScopeSnapshot<T> {
+  status: 'loading' | 'ready' | 'unavailable'
+  /** Last accepted schema-resolved section (the effective price table). */
+  value: T | undefined
+  /** Raw user layer; a field's PRESENCE here marks it overridden. */
+  user: unknown
+  /** Whether the Host document accepts writes (false for remote browsers). */
+  writable: boolean
+}
+
+/** Reactive binding over one settings namespace (native since rc.7). */
+export interface ClientSettingsScope<T> {
+  getSnapshot(): ClientScopeSnapshot<T>
+  subscribe(listener: () => void): () => void
+  /** Queue one top-level field write; a rejected write re-reads instead of
+   *  throwing — confirm by re-inspecting the user layer after settlement. */
+  set(field: string, value: unknown): Promise<void>
+}
+
+/** The settingsScope service: binds namespaces, resolving connection/remote
+ *  through the caller's fiber (hence the plugin's own inject list). */
+export interface ClientSettingsScopeBinder {
+  bind<T>(spec: { namespace: string }): ClientSettingsScope<T>
 }

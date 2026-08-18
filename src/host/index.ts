@@ -4,21 +4,22 @@
  * table (per-provider currency, per-model peak windows). Registers:
  *  - a `billing-pricing` settings namespace (defaults + user overrides),
  *  - a `billing` session-projection unit (the fold the UI reads),
- *  - fenced `/billing/api` HTTP routes for settings get/update, provider
- *    catalog, and refresh.
+ *  - fenced `/billing/api` HTTP routes for the provider catalog, per-turn
+ *    detail, and refresh.
  *
- * The routes bypass the built-in settings RPC exposure whitelist (hardcoded
- * in the main repo), mirroring the reference third-party plugin's own fenced
- * JSON API pattern.
+ * Price-table reads/writes ride the harness's native settings RPC (served for
+ * every registered namespace since rc.7 — no exposure whitelist anymore); the
+ * client binds a `settingsScope` to the namespace. The remaining fenced JSON
+ * routes cover what the settings RPC does not: the live LLM catalog and
+ * on-demand session folds.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { HostContext } from './context-types.ts'
 import type { SessionBillingStats, PriceTable, ModelPrice, ModelCapability, TurnCost } from '../shared.ts'
-import { RECENT_TURNS_CAP } from '../shared.ts'
+import { PRICING_NAMESPACE, RECENT_TURNS_CAP } from '../shared.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from './session-stats.ts'
 import type { BillingFoldState } from './session-stats.ts'
 import { DEFAULT_TABLE } from './default-prices.ts'
@@ -26,7 +27,7 @@ import { BillingRouteError, readJsonBody, writeError, writeOk } from './wire.ts'
 import { billingFence } from './fence.ts'
 
 /** The settings namespace for this plugin. */
-export const PRICING_NS = settingsNamespace('billing-pricing')
+export const PRICING_NS = settingsNamespace(PRICING_NAMESPACE)
 
 /** Schemastery schema for the price table (per-provider currency + model rows). */
 const tierSchema = z.object({
@@ -219,8 +220,9 @@ export function apply(ctx: HostContext): void {
 
   ctx.effect(() => scope.watch(() => mountProjection()), 'billing: price-table watcher')
 
-  // /billing/api routes: settings.get, settings.update, catalog, refresh.
-  // Fenced to loopback (DNS-rebinding defense); the client fetches these.
+  // /billing/api routes: catalog, turns, refresh. Fenced to loopback
+  // (DNS-rebinding defense); the client fetches these. The price table itself
+  // no longer transits here — it rides the native settings RPC.
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/billing/api',
@@ -242,12 +244,6 @@ export function apply(ctx: HostContext): void {
       try {
         const payload = await readJsonBody(req)
         switch (method) {
-          case 'settings.get':
-            writeOk(res, settingsGet(scope))
-            break
-          case 'settings.update':
-            writeOk(res, await settingsUpdate(scope, payload))
-            break
           case 'catalog':
             writeOk(res, await catalog(ctx))
             break
@@ -272,31 +268,6 @@ export function apply(ctx: HostContext): void {
   }), 'billing: /billing/api routes')
 
   ctx.effect(() => () => { disposeProjection?.() }, 'billing: projection teardown')
-}
-
-/** Read the current resolved price table. */
-function settingsGet(scope: SettingsScope<PriceTable>): { value: PriceTable } {
-  return { value: scope.get() }
-}
-
-/** Replace the price table (full section write) with schema validation. */
-async function settingsUpdate(
-  scope: SettingsScope<PriceTable>,
-  payload: unknown,
-): Promise<{ ok: true }> {
-  const body = payload as { value?: unknown }
-  if (body === null || typeof body !== 'object' || body.value === undefined) {
-    throw new BillingRouteError('bad-payload', 'missing "value"', 400)
-  }
-  // Schema violations are client errors (400), not internal 500s.
-  let next: PriceTable
-  try {
-    next = priceTableSchema(body.value) as PriceTable
-  } catch (error) {
-    throw new BillingRouteError('bad-payload', error instanceof Error ? error.message : String(error), 400)
-  }
-  await scope.replace(next)
-  return { ok: true }
 }
 
 /** Group the live registered providers and their model catalogs for the

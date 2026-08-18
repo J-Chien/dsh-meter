@@ -2,53 +2,156 @@
    theme.module.css's --billing-* variables (no direct --dsw-* references).
    Interaction timing constants live in interaction.ts. */
 
-.pane {
+.editor {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 4px 0 24px;
+  padding: 12px 0;
 }
 
-.head {
-  display: flex;
+/* ── Native card chrome (mirrors the harness's PluginCard 1:1, resolved
+ *  through --billing-* tokens) ───────────────────────────────────────── */
+
+.card {
+  border: 1px solid var(--billing-border-l2);
+  background: var(--billing-surface-sunken);
+  border-radius: var(--billing-radius-3);
+  list-style: none;
+  transition: border-color var(--billing-motion-medium), background var(--billing-motion-medium);
+}
+
+.card:hover {
+  border-color: var(--billing-text-dimmed);
+}
+
+.cardOpen {
+  background: var(--billing-surface-panel);
+  border-color: var(--billing-text-dimmed);
+}
+
+.header {
+  appearance: none;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: var(--billing-radius-3);
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-}
-
-.title {
-  margin: 0;
-  color: var(--billing-text-primary);
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 600;
-}
-
-.headRight {
+  padding: 14px 16px;
   display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
-.saved {
-  color: var(--billing-state-business);
+.header:focus-visible {
+  outline: 2px solid var(--billing-brand-primary);
+  outline-offset: -2px;
+}
+
+.headText {
+  flex-direction: column;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+  display: flex;
+}
+
+.name {
+  color: var(--billing-text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.description {
+  color: var(--billing-text-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pending {
+  white-space: nowrap;
+  background: var(--billing-module-bg);
+  color: var(--billing-text-secondary);
+  border-radius: 999px;
+  flex: none;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 17px;
+}
+
+.body {
+  border-top: 1px solid var(--billing-border-l2);
+  margin: 0 16px;
+  padding-bottom: 8px;
+}
+
+.readOnly {
+  color: var(--billing-text-tertiary);
+  margin: 12px 0 0;
   font-size: 12px;
+  line-height: 1.5;
+}
+
+.footer {
+  border-top: 1px solid var(--billing-border-l2);
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0 4px;
+  display: flex;
+}
+
+.failed {
+  min-width: 0;
+  color: var(--billing-text-error);
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.discard,
+.save {
+  appearance: none;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: var(--billing-radius-2);
+  padding: 5px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.discard {
+  border-color: var(--billing-border-l2);
+  color: var(--billing-text-secondary);
+  background: none;
+}
+
+.discard:hover:not(:disabled) {
+  color: var(--billing-text-primary);
+  border-color: var(--billing-text-dimmed);
 }
 
 .save {
-  padding: 5px 14px;
-  border: 0;
-  border-radius: var(--billing-radius-2);
-  background: var(--billing-state-business);
-  color: #fff;
-  font-size: 13px;
-  line-height: 20px;
-  cursor: pointer;
+  background: var(--billing-text-primary);
+  color: var(--billing-surface-sunken);
 }
 
+.discard:disabled,
 .save:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: default;
+}
+
+.discard:focus-visible,
+.save:focus-visible {
+  outline: 2px solid var(--billing-brand-primary);
+  outline-offset: 1px;
 }
 
 .empty,
@@ -59,11 +162,6 @@
   color: var(--billing-text-tertiary);
   font-size: 13px;
   text-align: center;
-}
-
-.error {
-  color: var(--billing-state-error);
-  font-size: 13px;
 }
 
 .group {
@@ -100,7 +198,7 @@
 .chevron {
   flex: none;
   color: var(--billing-text-tertiary);
-  transition: transform var(--billing-motion-fast) var(--billing-ease);
+  transition: transform var(--billing-motion-medium) var(--billing-ease);
 }
 
 .chevronOpen {

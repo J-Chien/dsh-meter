@@ -1,9 +1,15 @@
 /**
- * Billing settings page: edit the price table grouped by the live registered
+ * Billing settings card: edit the price table grouped by the live registered
  * providers (from the host catalog). Each provider has its own currency and
  * a collapsible list of its models; each model row edits base (off-peak)
  * prices and optional peak windows. No manual model entry — models come from
- * the catalog. Reads and writes ride the fenced /billing/api routes.
+ * the catalog.
+ *
+ * Rendered as a native `settings.plugin.item` card (deepseek-harness rc.7)
+ * inside the settings panel's plugins tab, keyed by the `billing-pricing`
+ * namespace. The card owns ALL of its chrome (the tab supplies no props);
+ * reads/writes ride the native settings RPC through the shared
+ * `settingsScope` binding (pricing-scope.ts) — no bespoke settings routes.
  *
  * Prices are stored host-side as PRICE_PRECISION integers but EDITED as
  * "元/M" decimals (type `10.155`, not `1015500`). The price input keeps a
@@ -14,24 +20,26 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  getPriceTable, getProviderCatalog, updatePriceTable, notifyPricingUpdated,
+  getProviderCatalog,
   type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier, type ProviderCatalogRow, type ModelCapability,
 } from './billing-api.ts'
 import { parsePriceInput, priceToInput, parseKTokensInput, kTokensToInput, formatTokens } from './format.ts'
+import { pricingScope, usePricingSnapshot } from './pricing-scope.ts'
 import { consumeLocateModel, LOCATE_EVENT, type LocateModelRequest } from './locate.ts'
 import { BillingLabel } from './BillingLabel.tsx'
 import { type BillingKey } from './locales.ts'
 import './theme.module.css'
 import css from './BillingSettings.module.css'
 
-/** The inject face apply passes to this section. */
+/** The inject face apply passes to this card. */
 export interface BillingSettingsInjected {
   t: (key: BillingKey) => string
 }
 
-/** Full props for the billing settings section. */
-export type BillingSettingsSectionProps =
-  BillingSettingsInjected & { close: () => void }
+/** Full props for the billing settings card. The native
+ *  `settings.plugin.item` slot is keyed by namespace and supplies no owner
+ *  props (no `close`, no `children`) — only what apply injects. */
+export type BillingSettingsCardProps = BillingSettingsInjected
 
 /** Per-provider editor state. */
 interface ProviderEdit {
@@ -58,8 +66,8 @@ interface ModelEdit {
   capability?: ModelCapability
 }
 
-type LoadState =
-  | { status: 'loading' }
+/** Editor state; undefined until the first build (catalog + table both in). */
+type EditorState =
   | { status: 'ready'; providers: ProviderEdit[] }
   | { status: 'error'; message: string }
 
@@ -155,18 +163,28 @@ function scrollModelIntoView(row: HTMLElement): void {
   container.scrollTo({ top: target, behavior: 'smooth' })
 }
 
-/** The billing settings section. */
-export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
-  const [state, setState] = useState<LoadState>({ status: 'loading' })
+/** The billing settings card (native `settings.plugin.item`, rc.7). Chrome
+ *  mirrors the harness's own PluginCard (header = name + description + dirty
+ *  pill + chevron; body = read-only notice + controls + save/discard footer)
+ *  so the card reads exactly like a built-in one. */
+export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
+  // Live price-table snapshot from the shared settingsScope binding: saves in
+  // ANY tab re-seed this, and a host restart/reconnect re-reads it. The
+  // editor seeds from it once; afterwards drafts own the state (parity with
+  // the old fetch-on-mount page).
+  const snapshot = usePricingSnapshot()
+  const [editor, setEditor] = useState<EditorState | undefined>(undefined)
   const [saving, setSaving] = useState(false)
-  const [savedFlash, setSavedFlash] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Native dirty semantics: any edit marks the card (header pill), save or
+  // discard clears it. The catalog is kept for discard's rebuild.
+  const [dirty, setDirty] = useState(false)
+  const catalogRef = useRef<ProviderCatalogRow[] | undefined>(undefined)
 
-  // Clear the "saved" flash timer on unmount (no setState after unmount).
-  useEffect(() => () => {
-    if (flashTimer.current !== null) clearTimeout(flashTimer.current)
-  }, [])
+  // The card is a disclosure: collapsed until opened (or a locate request
+  // arrives). Editor state lives here, so toggling never loses drafts.
+  const [cardOpen, setCardOpen] = useState(false)
+
   // All provider groups start collapsed; the first successful load seeds the
   // collapsed set with every provider id (ids are only known after the load).
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
@@ -174,17 +192,22 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
 
   // A pending "locate this model" request from the header card: consumed on
   // mount (queued before the panel opened) or live via the window event
-  // (section already mounted when the user clicks the gear again). The
-  // functional update keeps the request across StrictMode's double effect.
+  // (card already mounted when the user clicks the gear again). Either way
+  // the card opens so the located row is visible.
   const [locate, setLocate] = useState<LocateModelRequest | undefined>(undefined)
 
   useEffect(() => {
-    setLocate(previous => previous ?? consumeLocateModel())
+    const queued = consumeLocateModel()
+    if (queued !== undefined) {
+      setCardOpen(true)
+      setLocate(previous => previous ?? queued)
+    }
   }, [])
 
   useEffect(() => {
     const onLocate = (event: Event): void => {
       consumeLocateModel()
+      setCardOpen(true)
       setLocate((event as CustomEvent<LocateModelRequest>).detail)
     }
     window.addEventListener(LOCATE_EVENT, onLocate)
@@ -193,7 +216,7 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
 
   // Expand the located provider's group (groups start collapsed by default).
   useEffect(() => {
-    if (locate === undefined || state.status !== 'ready') return
+    if (locate === undefined || editor?.status !== 'ready') return
     if (collapsed.has(locate.provider)) {
       setCollapsed(prev => {
         const next = new Set(prev)
@@ -201,45 +224,62 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
         return next
       })
     }
-  }, [locate, state, collapsed])
+  }, [locate, editor, collapsed])
 
   // Scroll the located model row into view once it has rendered, then clear.
   useEffect(() => {
-    if (locate === undefined || state.status !== 'ready') return
+    if (locate === undefined || editor?.status !== 'ready' || !cardOpen) return
     const row = document.querySelector<HTMLElement>(
       `[data-billing-model="${CSS.escape(`${locate.provider}/${locate.model}`)}"]`,
     )
     if (row === null) return // provider still collapsed, or model not in the catalog
     scrollModelIntoView(row)
     setLocate(undefined)
-  }, [locate, state, collapsed])
+  }, [locate, editor, collapsed, cardOpen])
 
-  const load = useCallback(async () => {
-    setState({ status: 'loading' })
-    try {
-      const [catalog, table] = await Promise.all([getProviderCatalog(), getPriceTable()])
+  // Build the editor once the scope's first accepted table AND the catalog
+  // are both in. External saves after that do NOT re-seed (would clobber
+  // drafts); the save path merges preserved rows off the live snapshot.
+  useEffect(() => {
+    if (editor !== undefined || snapshot.status !== 'ready' || snapshot.value === undefined) return
+    const table = snapshot.value
+    let cancelled = false
+    getProviderCatalog().then(catalog => {
+      if (cancelled) return
+      catalogRef.current = catalog.providers
       const providers = buildEditor(catalog.providers, table)
-      setState({ status: 'ready', providers })
+      setEditor({ status: 'ready', providers })
       if (!defaultCollapsed.current) {
         defaultCollapsed.current = true
         setCollapsed(new Set(providers.map(p => p.id)))
       }
-    } catch (error) {
-      setState({ status: 'error', message: error instanceof Error ? error.message : String(error) })
-    }
-  }, [])
-
-  useEffect(() => { void load() }, [load])
+    }).catch((error: unknown) => {
+      if (cancelled) return
+      setEditor({ status: 'error', message: error instanceof Error ? error.message : String(error) })
+    })
+    return () => { cancelled = true }
+  }, [editor, snapshot])
 
   const patchProvider = useCallback((providerId: string, fn: (p: ProviderEdit) => ProviderEdit) => {
-    setState(s => {
-      if (s.status !== 'ready') return s
+    setDirty(true)
+    setEditor(s => {
+      if (s?.status !== 'ready') return s
       return { ...s, providers: s.providers.map(p => (p.id === providerId ? fn(p) : p)) }
     })
   }, [])
 
+  /** Discard drafts: rebuild the editor from the last accepted table. */
+  const discard = (): void => {
+    const table = snapshot.value
+    const catalog = catalogRef.current
+    if (table === undefined || catalog === undefined) return
+    setEditor({ status: 'ready', providers: buildEditor(catalog, table) })
+    setDirty(false)
+    setSaveError(undefined)
+  }
+
   const save = async (): Promise<void> => {
-    if (state.status !== 'ready' || saving) return
+    if (editor?.status !== 'ready' || saving || !snapshot.writable) return
     setSaving(true)
     setSaveError(undefined)
     try {
@@ -248,7 +288,7 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
       // provider/model keys the editor represents (catalog-covered,
       // effort-less). The editor OWNS these rows: clearing one unregisters it.
       const editorKeys = new Set<string>()
-      for (const provider of state.providers) {
+      for (const provider of editor.providers) {
         providers[provider.id] = { currency: provider.currency, currencySymbol: provider.currencySymbol }
         for (const m of provider.models) {
           editorKeys.add(`${m.provider}/${m.model}`)
@@ -284,26 +324,40 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
       }
       // Merge back rows the editor cannot represent — models absent from the
       // live catalog (provider unlisted/offline) and reasoningEffort-keyed
-      // rows. Without this, one save would silently delete them.
-      const latest = await getPriceTable()
-      for (const row of latest.models) {
-        if (row.reasoningEffort !== undefined || !editorKeys.has(`${row.provider}/${row.model}`)) {
-          models.push(row)
+      // rows. Without this, one save would silently delete them. Read the
+      // LIVE accepted table from the scope (kept current by the binding) —
+      // same role as the old settings.get re-read.
+      const scope = pricingScope()
+      const latest = scope.getSnapshot().value
+      if (latest !== undefined) {
+        for (const row of latest.models) {
+          if (row.reasoningEffort !== undefined || !editorKeys.has(`${row.provider}/${row.model}`)) {
+            models.push(row)
+          }
+        }
+        for (const [id, currency] of Object.entries(latest.providers)) {
+          if (!(id in providers) && models.some(m => m.provider === id)) providers[id] = currency
         }
       }
-      for (const [id, currency] of Object.entries(latest.providers)) {
-        if (!(id in providers) && models.some(m => m.provider === id)) providers[id] = currency
+      // Native write path: per-field mutate on the namespace section (the
+      // table's two top-level fields). The host's settings watcher re-mounts
+      // the projection, so every session re-folds with the new prices, and
+      // every bound client re-seeds off the committed document — no bespoke
+      // update route, no save broadcast.
+      await scope.set('providers', providers)
+      await scope.set('models', models)
+      // A rejected write (host validation / revision conflict) silently
+      // re-reads instead of throwing — confirm via the raw user layer.
+      const landed = scope.getSnapshot().user as Partial<PriceTable> | undefined
+      if (landed === undefined
+        || JSON.stringify(landed.providers) !== JSON.stringify(providers)
+        || JSON.stringify(landed.models) !== JSON.stringify(models)) {
+        throw new Error(t('settings.saveRejected'))
       }
-      await updatePriceTable({ providers, models })
-      // Tell mounted header actions to refetch the table — a save can change
-      // peak window hours without changing their peak-model set.
-      notifyPricingUpdated()
-      setSavedFlash(true)
-      if (flashTimer.current !== null) clearTimeout(flashTimer.current)
-      flashTimer.current = setTimeout(() => setSavedFlash(false), 1500)
+      setDirty(false)
     } catch (error) {
-      // Surface the failure next to the save button (the load-time error pane
-      // is not mounted here, so a swallowed error would look like a hang).
+      // Surface the failure in the footer (native saveFailed slot): a
+      // swallowed error would look like a hang.
       setSaveError(error instanceof Error ? error.message : String(error))
     } finally {
       setSaving(false)
@@ -319,51 +373,74 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
     })
   }
 
-  if (state.status === 'loading') {
-    return <div className={css.pane}>{t('settings.loading')}</div>
-  }
-  if (state.status === 'error') {
-    return <div className={css.pane}><span className={css.error}>{t('settings.error')}: {state.message}</span></div>
-  }
+  // Native card behavior: a namespace this client cannot see (remote browser,
+  // memory mode) renders nothing rather than a disabled card.
+  if (snapshot.status !== 'ready') return null
+
+  const saveBlocked = !dirty || saving || !snapshot.writable || editor?.status !== 'ready'
 
   return (
-    <div className={css.pane}>
-      <div className={css.head}>
-        <h2 className={css.title}>{t('settings.title')}</h2>
-        <div className={css.headRight}>
-          {saveError !== undefined ? <span className={css.error}>{t('settings.saveFailed')}: {saveError}</span> : null}
-          {savedFlash ? <span className={css.saved}>{t('settings.saved')}</span> : null}
-          <button type="button" className={css.save} onClick={() => void save()} disabled={saving}>
-            {saving ? t('settings.saving') : t('settings.save')}
-          </button>
-        </div>
-      </div>
+    <li className={cardOpen ? `${css.card} ${css.cardOpen}` : css.card}>
+      <button type="button" className={css.header} onClick={() => setCardOpen(open => !open)}
+        aria-expanded={cardOpen}
+        aria-label={`${cardOpen ? t('settings.collapse') : t('settings.expand')}: ${t('settings.title')}`}>
+        <span className={css.headText}>
+          <span className={css.name}>{t('settings.title')}</span>
+          <span className={css.description}>{t('settings.desc')}</span>
+        </span>
+        {dirty ? <span className={css.pending}>{t('settings.unsaved')}</span> : null}
+        <IconChevronDownOutline14 className={cardOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+      </button>
 
-      {state.providers.length === 0
-        ? <div className={css.empty}>{t('settings.empty')}</div>
-        : state.providers.map(provider => (
-          <ProviderGroup
-            key={provider.id}
-            provider={provider}
-            collapsed={collapsed.has(provider.id)}
-            t={t}
-            onToggle={() => toggle(provider.id)}
-            onCurrency={(currency) => {
-              patchProvider(provider.id, p => ({
-                ...p,
-                currency,
-                currencySymbol: currency === 'CNY' ? '¥' : '$',
-              }))
-            }}
-            onModel={(modelKey, fn) => {
-              patchProvider(provider.id, p => ({
-                ...p,
-                models: p.models.map(m => (m.model === modelKey ? fn(m) : m)),
-              }))
-            }}
-          />
-        ))}
-    </div>
+      {cardOpen ? (
+        <div className={css.body}>
+          {!snapshot.writable ? <p className={css.readOnly} role="status">{t('settings.readonly')}</p> : null}
+          {editor === undefined ? (
+            <p className={css.readOnly}>{t('settings.loading')}</p>
+          ) : editor.status === 'error' ? (
+            <p className={css.failed} role="status">{t('settings.error')}: {editor.message}</p>
+          ) : editor.providers.length === 0 ? (
+            <div className={css.empty}>{t('settings.empty')}</div>
+          ) : (
+            <div className={css.editor}>
+              {editor.providers.map(provider => (
+                <ProviderGroup
+                  key={provider.id}
+                  provider={provider}
+                  collapsed={collapsed.has(provider.id)}
+                  t={t}
+                  onToggle={() => toggle(provider.id)}
+                  onCurrency={(currency) => {
+                    patchProvider(provider.id, p => ({
+                      ...p,
+                      currency,
+                      currencySymbol: currency === 'CNY' ? '¥' : '$',
+                    }))
+                  }}
+                  onModel={(modelKey, fn) => {
+                    patchProvider(provider.id, p => ({
+                      ...p,
+                      models: p.models.map(m => (m.model === modelKey ? fn(m) : m)),
+                    }))
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          <div className={css.footer}>
+            {saveError !== undefined
+              ? <p className={css.failed} role="status">{t('settings.saveFailed')}: {saveError}</p>
+              : null}
+            <button type="button" className={css.discard} disabled={!dirty || saving} onClick={discard}>
+              {t('settings.discard')}
+            </button>
+            <button type="button" className={css.save} onClick={() => void save()} disabled={saveBlocked}>
+              {saving ? t('settings.saving') : t('settings.save')}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </li>
   )
 }
 

@@ -3,7 +3,8 @@
  * opens a billing card on hover or click. The card shows per-session token
  * buckets, cache hit rate, per-currency cost (with a 空闲/高峰 split when the
  * models configure peak periods), a refresh button, and a Settings button
- * that opens the Billing settings page.
+ * that opens the settings panel (the price editor is a native
+ * `settings.plugin.item` card in the panel's plugins tab).
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -13,7 +14,8 @@ import {
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, findPriceRow, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { formatPrice, formatTime, formatTokens } from './format.ts'
-import { getPriceTable, refreshSessionStats, PRICING_UPDATED_EVENT } from './billing-api.ts'
+import { refreshSessionStats } from './billing-api.ts'
+import { usePricingTable } from './pricing-scope.ts'
 import { requestLocateModel } from './locate.ts'
 import type {} from './types.ts'
 import { BillingLabel } from './BillingLabel.tsx'
@@ -42,8 +44,8 @@ export type BillingActionProps =
  * over the generic row (`findPriceRow`). Returns false until the table
  * arrives.
  */
-function inPeakNow(peakModels: readonly string[], table: PriceTable | null, timeMs: number): boolean {
-  if (table === null) return false
+function inPeakNow(peakModels: readonly string[], table: PriceTable | undefined, timeMs: number): boolean {
+  if (table === undefined) return false
   // Callers tolerate frames from a host that has not restarted with the
   // peakModels field yet (its schema strips the unknown key) by passing [].
   for (const key of peakModels) {
@@ -76,8 +78,13 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   const [override, setOverride] = useState<SessionBillingStats | undefined>(undefined)
   const [refreshing, setRefreshing] = useState(false)
   const [peakNow, setPeakNow] = useState(false)
-  const tableRef = useRef<PriceTable | null>(null)
   const [turnsOpen, setTurnsOpen] = useState(false)
+
+  // The price table rides the native settingsScope binding: a save commits the
+  // Host document, whose update event re-seeds every subscriber — across tabs
+  // too, so the peak tag never judges by stale window hours. Undefined while
+  // loading or on a remote (non-loopback) browser; the tag just stays hidden.
+  const table = usePricingTable()
 
   // A new projection frame supersedes any refresh override.
   useEffect(() => { setOverride(undefined) }, [projected])
@@ -86,73 +93,25 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   const peakModels = stats.peakModels ?? []
   const peakKey = peakModels.join('|')
 
-  // Fetch the price table on mount and when the session's peak-model set
-  // changes (a settings save re-mounts the projection, which can change it).
-  // Token counters move with every message, so this must NOT depend on the
-  // whole stats object — that would POST once per frame.
+  // Re-evaluate the peak tag when the table lands or changes, when the
+  // session's peak-model set changes (a settings save re-mounts the
+  // projection), and once a minute so the tag flips at window boundaries
+  // without host round-trips.
   useEffect(() => {
-    let cancelled = false
-    const evaluate = async (): Promise<void> => {
-      try {
-        const table = await getPriceTable()
-        if (cancelled) return
-        tableRef.current = table
-        setPeakNow(inPeakNow(peakModels, table, Date.now()))
-      } catch {
-        // Transient failure: keep the previous table and tag state.
-      }
-    }
-    void evaluate()
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content
-  }, [peakKey])
-
-  // Re-evaluate against the clock every minute so the tag flips at window
-  // boundaries without host round-trips.
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (tableRef.current !== null) setPeakNow(inPeakNow(peakModels, tableRef.current, Date.now()))
-    }, 60_000)
+    const evaluate = (): void => setPeakNow(inPeakNow(peakModels, table, Date.now()))
+    evaluate()
+    const timer = window.setInterval(evaluate, 60_000)
     return () => window.clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content
-  }, [peakKey])
-
-  // A settings save may change peak WINDOW HOURS without changing the
-  // peak-model set (peakKey unchanged → the fetch effect above does not
-  // rerun). Refetch on the save event so the tag never judges by stale hours.
-  // The event fires in the saving tab; a save made in ANOTHER tab arrives as
-  // a localStorage broadcast (the same key, storage events) and refetches
-  // here too — cross-tab saves must not leave this tag on stale hours.
-  useEffect(() => {
-    let cancelled = false
-    const onSaved = (): void => {
-      void getPriceTable().then(table => {
-        if (cancelled) return
-        tableRef.current = table
-        setPeakNow(inPeakNow(peakModels, table, Date.now()))
-      }).catch(() => { /* keep the previous table and tag state */ })
-    }
-    const onStorage = (event: StorageEvent): void => {
-      if (event.key === PRICING_UPDATED_EVENT) onSaved()
-    }
-    window.addEventListener(PRICING_UPDATED_EVENT, onSaved)
-    window.addEventListener('storage', onStorage)
-    return () => {
-      cancelled = true
-      window.removeEventListener(PRICING_UPDATED_EVENT, onSaved)
-      window.removeEventListener('storage', onStorage)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content
-  }, [peakKey])
+  }, [peakKey, table])
 
   const doRefresh = useCallback(async (): Promise<void> => {
     if (refreshing) return
     setRefreshing(true)
     try {
-      const [freshStats, table] = await Promise.all([refreshSessionStats(String(sessionId)), getPriceTable()])
-      tableRef.current = table
-      setPeakNow(inPeakNow(freshStats.peakModels ?? [], table, Date.now()))
-      setOverride(freshStats)
+      // The peak tag re-evaluates off the peakKey effect above when the fresh
+      // stats land; the table itself stays live via the scope subscription.
+      setOverride(await refreshSessionStats(String(sessionId)))
     } finally {
       setRefreshing(false)
     }
@@ -438,7 +397,7 @@ function BillingCard({ stats, t, refreshing, onRefresh, onDetail }: {
               type="button"
               className={css.settings}
               aria-label={t('settings.open.aria')}
-              onClick={() => { openBillingSettings(t, stats.currentModel) }}
+              onClick={() => { openBillingSettings(stats.currentModel) }}
             >
               <IconSettingsOutline14 />
             </button>
@@ -751,19 +710,20 @@ function badgeText(stats: SessionBillingStats, t: (key: BillingKey) => string): 
 }
 
 /**
- * Open the DSH settings panel to the Billing section, and — when a current
- * model is known — queue a locate request so the section expands the
- * provider and scrolls the model row into view.
+ * Open the DSH settings panel, and — when a current model is known — queue a
+ * locate request. The billing price editor is a native `settings.plugin.item`
+ * card inside the panel's plugins tab (rc.7): the harness exposes no
+ * navigation API to select a tab or expand a card (both are component-local
+ * state), so the gear can only open the panel; the queued locate is consumed
+ * by the card when it mounts (the user opens the plugins tab), expanding the
+ * provider and scrolling the model row into view.
  *
  * The settings trigger has no stable attribute hook, so disambiguate among
  * the dialog-popover buttons: this plugin's own trigger is tagged
  * `data-billing-trigger`, the context meter's carries an `aria-label`; the
- * sidebar settings trigger is the remaining text-named one. The nav cell is
- * matched by this plugin's own registered (localized) label, polled until
- * the panel finishes mounting.
+ * sidebar settings trigger is the remaining text-named one.
  */
 function openBillingSettings(
-  t: (key: BillingKey) => string,
   model?: { provider: string; model: string },
 ): void {
   const trigger = [...document.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]')]
@@ -771,17 +731,4 @@ function openBillingSettings(
   if (trigger === undefined) return
   if (model !== undefined) requestLocateModel(model)
   trigger.click()
-  const label = t('settings.nav')
-  let attempts = 0
-  const tick = (): void => {
-    for (const cell of document.querySelectorAll('nav button')) {
-      if (cell.textContent?.trim() === label) {
-        (cell as HTMLButtonElement).click()
-        return
-      }
-    }
-    attempts += 1
-    if (attempts < 20) window.setTimeout(tick, 50)
-  }
-  window.setTimeout(tick, 0)
 }
