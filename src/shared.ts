@@ -95,20 +95,58 @@ export interface PriceTable {
 
 /** Whether a wall-clock instant falls inside a peak window. Shared by the
  *  host fold and the client "currently in peak" hint so window semantics
- *  stay single-source. */
+ *  stay single-source.
+ *
+ *  `days` filters by the window's START day: an overnight window (22:00→06:00)
+ *  with days=[5] (Friday) covers Friday 22:00 through Saturday 06:00 — the
+ *  early-morning half belongs to the window that opened the previous day.
+ *  startHour === endHour reads as "all day". */
 export function inPeakWindow(period: PeakPeriod, timeMs: number): boolean {
   const date = new Date(timeMs)
   const day = date.getDay()
   const hour = date.getHours()
-  // Empty (or absent) days = every day; a non-empty mask restricts.
-  if (period.days !== undefined && period.days.length > 0 && !period.days.includes(day)) return false
+  let inside: boolean
+  let windowDay = day
   if (period.startHour < period.endHour) {
-    if (hour < period.startHour || hour >= period.endHour) return false
+    inside = hour >= period.startHour && hour < period.endHour
+  } else if (period.startHour > period.endHour) {
+    // Overnight window: e.g. 22 → 6 means [22,24) ∪ [0,6); the morning half
+    // is billed under the window that STARTED the previous day.
+    inside = hour >= period.startHour || hour < period.endHour
+    if (hour < period.endHour) windowDay = (day + 6) % 7
   } else {
-    // Overnight window: e.g. 22 → 6 means [22,24) ∪ [0,6).
-    if (hour < period.startHour && hour >= period.endHour) return false
+    inside = true // start == end: the whole day
   }
+  if (!inside) return false
+  // Empty (or absent) days = every day; a non-empty mask restricts by the
+  // window's start day (see the doc comment above).
+  if (period.days !== undefined && period.days.length > 0 && !period.days.includes(windowDay)) return false
   return true
+}
+
+/**
+ * Find the price row for one model. An EXACT reasoningEffort match wins over
+ * the generic (effortless) row regardless of array order; a request without
+ * an effort only ever matches the generic row. Single source for this
+ * precedence — the host fold, the peak-window check and the client peak tag
+ * all go through here so the three can never drift apart.
+ */
+export function findPriceRow(
+  table: PriceTable,
+  provider: string,
+  model: string,
+  reasoningEffort: string | undefined,
+): ModelPrice | undefined {
+  let generic: ModelPrice | undefined
+  for (const row of table.models) {
+    if (row.provider !== provider || row.model !== model) continue
+    if (row.reasoningEffort === undefined) {
+      generic ??= row
+      continue
+    }
+    if (reasoningEffort !== undefined && row.reasoningEffort === reasoningEffort) return row
+  }
+  return generic
 }
 
 /** One priced request's cost breakdown, folded from one `assistant/message`.
@@ -233,12 +271,43 @@ export function turnGrowths(turns: readonly TurnCost[]): number[] {
   return growths
 }
 
-/** Turn number of the most recent request row; undefined on an empty log. */
-export function currentTurnOf(turns: readonly TurnCost[]): number | undefined {
-  return turns.length > 0 ? turns[turns.length - 1]!.turn : undefined
+/** Per-turn growth keyed by TURN NUMBER: turn N → snapshot(N) − snapshot(N−1).
+ *  Index-aligning `turnGrowths` with `aggregateTurns` misaligns when a turn
+ *  splits across currencies (aggregate emits one row per turn:currency while
+ *  snapshots are one per turn), so consumers keying by turn must use this.
+ *
+ *  The FIRST turn (turn 1) keys to its whole snapshot: its predecessor is
+ *  the empty context, so everything it loaded IS new occupancy — a zero here
+ *  would under-report the turn that laid down the entire context. Only the
+ *  true first turn qualifies: the earliest turn of a TRUNCATED frame has an
+ *  unknown predecessor outside the window and stays unkeyed rather than
+ *  faking its whole snapshot as growth. */
+export function turnGrowthByTurn(turns: readonly TurnCost[]): Map<number, number> {
+  const growth = new Map<number, number>()
+  let currentTurn: number | undefined
+  let snapshot = 0
+  let previousSnapshot = 0
+  let hasPrevious = false
+  for (const row of turns) {
+    if (row.turn !== currentTurn) {
+      if (currentTurn !== undefined) {
+        previousSnapshot = snapshot
+        hasPrevious = true
+      }
+      currentTurn = row.turn
+    }
+    snapshot = row.inputTokens // last request wins within the turn
+    // Recompute on every row so the LAST request of the turn decides the
+    // delta (a turn's later requests, e.g. another currency's, still count).
+    // Turn 1 has no prior snapshot: its growth is its whole snapshot.
+    if (hasPrevious) growth.set(currentTurn!, snapshot - previousSnapshot)
+    else if (currentTurn === 1) growth.set(currentTurn!, snapshot)
+  }
+  return growth
 }
 
-/** Max per-request rows the projection frame carries (bounded for size). */
+/** Bound the projection frame's turns: the most recent RECENT_TURNS_CAP
+ *  conversation TURNS (a turn keeps all its tool-calling steps). */
 export const RECENT_TURNS_CAP = 50
 /** Context-usage ratio above which the card warns "near limit". */
 export const CONTEXT_WARN_THRESHOLD = 0.85
@@ -295,7 +364,13 @@ export function estimateCompactionEta(
 /** Compaction history folded from `compaction/summary` events (log-only,
  *  appended by the harness compaction seam). `shadowedTokenCount` is the
  *  exact heuristic price of the replaced range, so the count is a real
- *  observable — no estimation on our side. */
+ *  observable — no estimation on our side.
+ *
+ *  The summarization call itself is a real one-shot provider request (it
+ *  produces no `assistant/message`), so its provider-reported usage is priced
+ *  into the session totals and ALSO accumulated here (`tokens` / per-currency
+ *  `cost`) to keep it attributable: mixing a giant one-shot re-read into the
+ *  conversation token buckets would wreck the cache-hit-rate semantics. */
 export interface CompactionStats {
   /** Number of successful compactions this session. */
   count: number
@@ -303,6 +378,10 @@ export interface CompactionStats {
   lastTime?: number
   /** Shadowed tokens (heuristic price) of the most recent compaction. */
   lastShadowedTokens?: number
+  /** Total provider-reported tokens of all summarization calls. */
+  tokens: number
+  /** Summarization cost in PRICE_PRECISION units, keyed by currency. */
+  cost: Record<string, number>
 }
 
 /** Per-session billing stats folded from the log. */
@@ -386,12 +465,13 @@ export const EMPTY_STATS: SessionBillingStats = (() => {
     cost: {},
     byPeriod: {},
     turns: [],
-    compactions: { count: 0 },
+    compactions: { count: 0, tokens: 0, cost: {} },
   }
   Object.freeze(stats.peakModels)
   Object.freeze(stats.cost)
   Object.freeze(stats.byPeriod)
   Object.freeze(stats.turns)
+  Object.freeze(stats.compactions.cost)
   Object.freeze(stats.compactions)
   return Object.freeze(stats)
 })()

@@ -7,9 +7,9 @@
  * `PRICE_PRECISION`ths of the configured currency unit (default 1/100000 of
  * a yuan, i.e. 0.00001). This keeps 4-decimal prices like ¥10.1550/M exact.
  */
-import { inPeakWindow, PRICE_PRECISION, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
+import { findPriceRow, inPeakWindow, PRICE_PRECISION, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
 
-export { inPeakWindow, PRICE_PRECISION, formatPrice, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
+export { findPriceRow, inPeakWindow, PRICE_PRECISION, formatPrice, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
 
 /** One model's effective price for a given instant, in price units. */
 export interface EffectivePrice {
@@ -94,11 +94,7 @@ export function effectivePrice(
   totalInput = 0,
   output = 0,
 ): EffectivePrice {
-  const row = table.models.find(
-    m => m.provider === provider
-      && m.model === model
-      && (reasoningEffort === undefined || m.reasoningEffort === undefined || m.reasoningEffort === reasoningEffort),
-  )
+  const row = findPriceRow(table, provider, model, reasoningEffort)
   if (row === undefined) {
     return { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', found: false }
   }

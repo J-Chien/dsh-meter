@@ -1,54 +1,8 @@
-# dsh-meter v0.3 迭代 PRD：逐轮消耗与上下文占用
+# dsh-meter v0.3 迭代 PRD：逐轮消耗与上下文占用（已归档）
 
-> 状态：**已评审修订（开发基线）** · 评审角色：产品 + 架构 + 全栈 · 最近更新：见文末
-> 本 PRD 规划 v0.3 迭代能力，§0 评审结论与 §5 决策表为最终方案，可直接据 §9 开发方案动代码。既有能力与历史见 [PRD.md](PRD.md)。代码与文档均已按最终方案落地（见交接状态）。**v0.3.4 起，GUI 实测反馈修订了图表方向与表头（见文末迭代记录）：详情图表横轴轮次从左到右递增，明细表头去括号，请求序号始终带 step；「按请求」视图的图表仍按轮次聚合。**
-
----
-
-## ⚠️ 交接状态（新会话必读）
-
-> 由上一开发会话在 2026-08-17 中断后整理。**代码已按 §0 评审后的最终方案实现，源码级 typecheck 与纯逻辑测试全绿，完整构建已通过；后续会话已完成文档同步（§8 Step 7）与客户端 bundle 热更新验证（GUI 已服务最新 client.js），host 侧待重启后冒烟，尚未 commit。**
-
-### 已完成（源码层面）
-
-- **数据模型**（`src/shared.ts`）：新增 `TurnCost`（含 `priced` 字段）、`ModelCapability`；`SessionBillingStats` 新增 `turns`（有界）、`lastRequestInputTokens`、`contextWindow`、`maxOutputTokens`；新增常量 `RECENT_TURNS_CAP=50`、`CONTEXT_WARN_THRESHOLD=0.85`、`SINGLE_TURN_WARN_RATIO=0.3`；`EMPTY_STATS` 同步（`turns: []` 冻结）。
-- **折叠**（`src/host/session-stats.ts`）：`request/context` last-wins 设置/清除 `contextWindow`；`request/header` 设置/清除 `maxOutputTokens` 且 **no-op 快路径已纳入 `config.maxTokens` 比较**；`assistant/message` 逐条追加 `TurnCost`（未登记 `priced:false`、`cost:0`）、记 `lastRequestInputTokens`；新增 `foldBillingBounded`（截断到 50）。原始折叠保留全量（供 turns 路由）。
-- **host 路由与 schema**（`src/host/index.ts`）：投影 zod schema 新增四字段；`stateVersion` 5 → 6；投影 apply 内截断 `turns` 到 50；新增 `turns` 路由（全量，复用 `refresh` 的 sessionId 校验）；`catalog` 扩展 `capability`（对每个模型 `resolveModelInfo`，单模型失败降级缺省）；**已删除独立的 `capability` 路由**（按评审 R-2 并入 catalog）。
-- **client 数据层**（`src/client/billing-api.ts`）：新增 `getTurns(sessionId)`；`ProviderCatalogRow.models[]` 加 `capability?`；删除 `getModelCapability`。
-- **卡片**（`src/client/BillingAction.tsx` + module.css）：上下文占用进度条（`lastRequestInputTokens / contextWindow`，≥85% 预警、≥30% 单轮提示、`maxOutputTokens` 展示）；「最近消耗」迷你图（最近 10 条、费用横条、peak 着色、`title` hover）；卡片头部新增「查看详情」按钮。
-- **详情面板**（新文件 `src/client/BillingTurnsPanel.tsx` + module.css）：portal + fixed 定位（560px / 70vh / 窄屏 `calc(100vw-16px)`）；打开即以 `stats.turns` 渲染并 `getTurns` 拉全量替换；单图 + 费用/token 维度切换；费用柱按 period 着色、未登记斜纹；token 四段堆叠；>40 条横向滚动；明细表含**时间列（HH:MM:SS）**、`priced:false` 显示「未登记」；右上刷新按钮；Esc/外点关闭。
-- **设置页**（`src/client/BillingSettings.tsx`）：模型行标题区显示能力小字（`上下文 200K · 输出上限 8K（配置）`，缺省字段不显示）。
-- **文案**（`src/client/locales.ts`）：新增 `card.*` / `turn.*` / `capability.*`（zh/en 同步）。
-- **测试**（`tests/pure-check.ts`）：逐轮折叠、priced、lastRequestInputTokens、request/context 设置/清除、request/header maxTokens + no-op 含 maxTokens、50 截断方向、空日志等断言，全绿。
-- **文档**（§8 Step 7）：`README.md` 功能特性/数据模型速览/联动点清单/已知限制已同步最终方案；主 `docs/prd/PRD.md` v0.3 迭代记录已改写为评审后方案（删除 capability 路由与累计输入口径）。
-
-### 已验证
-
-```sh
-# 源码 + 测试 typecheck
-node_modules/typescript/bin/tsc --noEmit        # OK
-node_modules/typescript/bin/tsc --noEmit -p tsconfig.tests.json  # OK
-node tests/pure-check.ts                        # ALL PURE CHECKS PASSED 等全绿
-
-# 完整构建（注意：必须 rm -rf lib 后 tsc + tsdown，见下）
-node_modules/typescript/bin/tsc -p tsconfig.build.json
-node node_modules/.pnpm/tsdown@0.22.14_typescript@5.9.3/node_modules/tsdown/dist/run.mjs
-# lib/index.js 28.87kB / lib/client.js 119.04kB，均含 v0.3 新特性
-```
-
-### 遗留 / 未做
-
-1. **未 commit**：当前 git 工作区含 v0.3 全部改动（含 PRD/review 迁移 + 本 PRD），尚未提交。可用 `git status dsh-meter/` 查看。用户确认验证后再提交。
-2. **host 重启后冒烟待做**：host 进程（PID 35287）仍运行 v0.3 之前的 bundle——`/billing/api/turns` 返回 unknown method、`catalog` 无 `capability`。需重启 `dsh web`（`npx @deepseek-ai/dsh web`）后验证：卡片占用条/迷你图/详情面板拉全量、设置页能力行、`turns` 路由全量明细、`catalog` 带 `capability`。客户端 bundle 已确认上线（GUI 服务的 `client.js` 与最新构建 md5 一致）。
-3. **`lib/` 需用完整 build 重建**：上一会话只跑了 tsdown（基于旧 `lib/types`），host 产物一度是旧代码；**已用 `tsc -p tsconfig.build.json && tsdown` 重建为正确产物**，但新会话如需改动请走 `pnpm build`（= `rm -rf lib && tsc -p tsconfig.build.json && tsdown`）。
-4. **潜在待复核点**：详情面板打开时若 `getTurns` 失败仅保留卡片已有 50 条（按评审 S/R 设计的降级）；`maxTokens` 只有显式配置才进 `defaultMaxTokens`（设置页标注「（配置）」）；占用口径 = 最近一次请求输入（评审 R-1，非累计）。
-
-### 建议新会话第一步
-
-```sh
-cd dsh-meter && pnpm build && node tests/pure-check.ts
-# 再跑 GUI 冒烟（README 开发节）：host 改动需重启 dsh web，client 用 dev:watch
-```
+> ⚠️ **本文档已归档**，仅供追溯 v0.3 迭代的设计与评审过程，不再维护。
+> 当前有效规格见 [../PRD.md](../PRD.md)（v0.3 的功能需求 FR-6 ~ FR-9 已并入其 §4），逐版本变更见 [../CHANGELOG.md](../CHANGELOG.md)。
+> 原文的「交接状态」章节已删除（内容过期：当时未提交的代码已全部 commit 并验证，host 冒烟已完成）。
 
 ---
 

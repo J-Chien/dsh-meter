@@ -10,14 +10,20 @@ import type { EpochHeader, SessionEvent } from '@deepseek-ai/dsh-session'
 // Type-only: brings the `compaction/*` SessionEventMap variants into scope.
 import type {} from '@deepseek-ai/dsh-compaction'
 import { priceRequest, type PriceTable } from './price.ts'
-import { EMPTY_STATS, RECENT_TURNS_CAP, type SessionBillingStats, type TurnCost } from '../shared.ts'
+import { EMPTY_STATS, findPriceRow, RECENT_TURNS_CAP, type SessionBillingStats, type TurnCost } from '../shared.ts'
 
 export type { SessionBillingStats } from '../shared.ts'
 export { EMPTY_STATS } from '../shared.ts'
 
-/** The fold's full mutable state: latest request header + accumulated stats. */
+/** The request config the fold prices with (EpochHeader carries the rendered
+ *  system prompt and tool schemas too — dozens of KB the fold never reads,
+ *  so the state keeps only the config and the projection checkpoint stays
+ *  free of that redundant, sensitive text). */
+type HeaderConfig = EpochHeader['config']
+
+/** The fold's full mutable state: latest request config + accumulated stats. */
 export interface BillingFoldState {
-  header: EpochHeader | undefined
+  config: HeaderConfig | undefined
   stats: SessionBillingStats
 }
 
@@ -31,17 +37,13 @@ function cloneStats(stats: SessionBillingStats): SessionBillingStats {
       Object.entries(stats.byPeriod).map(([c, v]) => [c, { ...v }]),
     ),
     turns: [...stats.turns],
-    compactions: { ...stats.compactions },
+    compactions: { ...stats.compactions, cost: { ...stats.compactions.cost } },
   }
 }
 
 /** Whether a price row with peak periods exists for the model. */
 function modelHasPeriods(table: PriceTable, provider: string, model: string, effort: string | undefined): boolean {
-  const row = table.models.find(
-    m => m.provider === provider
-      && m.model === model
-      && (effort === undefined || m.reasoningEffort === undefined || m.reasoningEffort === effort),
-  )
+  const row = findPriceRow(table, provider, model, effort)
   return row !== undefined && row.periods !== undefined && row.periods.length > 0
 }
 
@@ -60,11 +62,11 @@ export function foldEvent(
     const stats = cloneStats(state.stats)
     if (next === undefined) delete stats.contextWindow
     else stats.contextWindow = next
-    return { header: state.header, stats }
+    return { config: state.config, stats }
   }
   if (event.type === 'request/header') {
     const { config } = event.data.header
-    const prev = state.header?.config
+    const prev = state.config
     // An unchanged config carries no billing information; keep the previous
     // state object so the projection does not push a no-op frame. The output
     // cap (config.maxTokens) participates: a header that only changed its
@@ -86,12 +88,11 @@ export function foldEvent(
     }
     if (config.maxTokens === undefined) delete stats.maxOutputTokens
     else stats.maxOutputTokens = config.maxTokens
-    return { header: event.data.header, stats }
+    return { config, stats }
   }
   if (event.type === 'assistant/message' && event.data.usage !== undefined) {
-    const header = state.header
-    if (header === undefined) return state
-    const { config } = header
+    const config = state.config
+    if (config === undefined) return state
     const usage = event.data.usage
     const uncachedInputTokens = usage.inputTokens
     const cacheReadTokens = usage.cacheReadTokens ?? 0
@@ -101,7 +102,7 @@ export function foldEvent(
     // One pricing formula, one place: priceRequest resolves the effective
     // tier/period price AND prices the four buckets, so the fold and any
     // future caller can never drift apart.
-    const { priceUnits: cost, period, found } = priceRequest(
+    const { priceUnits: cost, currency, period, found } = priceRequest(
       table,
       config.provider,
       config.model,
@@ -117,9 +118,7 @@ export function foldEvent(
     stats.outputTokens += outputTokens
     stats.lastRequestInputTokens = totalInputLength
 
-    let currency: string | undefined
     if (found) {
-      currency = table.providers[config.provider]?.currency ?? 'CNY'
       stats.requestCount += 1
       stats.cost[currency] = (stats.cost[currency] ?? 0) + cost
       const periodSplit = stats.byPeriod[currency] ?? { offPeak: 0, peak: 0 }
@@ -137,9 +136,10 @@ export function foldEvent(
 
     // One row per request, priced the same way the totals are. Unpriced
     // requests still record their real tokens (priced: false, cost 0) so the
-    // detail matches the totals. Truncation to RECENT_TURNS_CAP happens in
-    // the projection apply wrapper — the fold keeps full history for the
-    // turns route.
+    // detail matches the totals; they keep the provider's currency so
+    // turn-level aggregation groups them with the right bucket. Truncation
+    // to RECENT_TURNS_CAP happens in the projection apply wrapper — the fold
+    // keeps full history for the turns route.
     stats.turns.push({
       turn: event.data.turn,
       step: event.data.step,
@@ -152,26 +152,59 @@ export function foldEvent(
         ? cacheReadTokens / (uncachedInputTokens + cacheReadTokens)
         : 0,
       cost: found ? cost : 0,
-      currency: currency ?? 'CNY',
+      currency,
       period,
       priced: found,
     })
 
     const totalInput = stats.uncachedInputTokens + stats.cacheReadTokens
     stats.cacheHitRate = totalInput > 0 ? stats.cacheReadTokens / totalInput : 0
-    return { header, stats }
+    return { config, stats }
   }
   if (event.type === 'compaction/summary') {
     // A successful compaction's shadow price: the exact heuristic tokens of
-    // the replaced range. Pure observation — the harness meter already
-    // computed it, we just record the history for the forecast strip.
+    // the replaced range. Plus — when the provider reported it — the REAL
+    // usage of the summarization call itself: it is a one-shot ctx.llm.stream
+    // request that produces no assistant/message, so without folding it here
+    // its (often large) cost would vanish from the session entirely. Its cost
+    // joins the session totals; its tokens stay OUT of the conversation
+    // buckets (a one-shot re-read of the compacted range would wreck the
+    // cache-hit-rate semantics) and are accumulated on compactions instead.
     const stats = cloneStats(state.stats)
     stats.compactions = {
+      ...stats.compactions,
       count: stats.compactions.count + 1,
       lastTime: event.time,
       lastShadowedTokens: event.data.shadowedTokenCount,
     }
-    return { header: state.header, stats }
+    const usage = event.data.usage
+    if (usage !== undefined) {
+      const { provider, model } = event.data
+      const cacheReadTokens = usage.cacheReadTokens ?? 0
+      const cacheWriteTokens = usage.cacheWriteTokens ?? 0
+      const { priceUnits: cost, currency, period, found } = priceRequest(
+        table, provider, model, undefined, event.time,
+        { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens, cacheWriteTokens },
+      )
+      stats.compactions.tokens += usage.inputTokens + cacheReadTokens + cacheWriteTokens + usage.outputTokens
+      if (found) {
+        stats.requestCount += 1
+        stats.cost[currency] = (stats.cost[currency] ?? 0) + cost
+        stats.compactions.cost[currency] = (stats.compactions.cost[currency] ?? 0) + cost
+        const periodSplit = stats.byPeriod[currency] ?? { offPeak: 0, peak: 0 }
+        if (period === 'peak') periodSplit.peak += cost
+        else periodSplit.offPeak += cost
+        stats.byPeriod[currency] = periodSplit
+        if (modelHasPeriods(table, provider, model, undefined)) {
+          stats.hasPeakConfig = true
+          const key = `${provider}/${model}`
+          if (!stats.peakModels.includes(key)) stats.peakModels.push(key)
+        }
+      } else {
+        stats.unpricedRequestCount += 1
+      }
+    }
+    return { config: state.config, stats }
   }
   return state
 }
@@ -181,7 +214,7 @@ export function foldBilling(
   events: readonly SessionEvent[],
   table: PriceTable,
 ): SessionBillingStats {
-  let state: BillingFoldState = { header: undefined, stats: EMPTY_STATS }
+  let state: BillingFoldState = { config: undefined, stats: EMPTY_STATS }
   for (const event of events) state = foldEvent(state, event, table)
   return state.stats
 }

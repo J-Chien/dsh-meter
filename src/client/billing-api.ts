@@ -14,6 +14,16 @@ export interface ProviderCatalogRow {
   models: { id: string; name: string; capability?: ModelCapability }[]
 }
 
+/** Window event announcing a price-table save (the settings page dispatches
+ *  it; the header action listens and refetches so the peak tag's window
+ *  hours never go stale after a save). */
+export const PRICING_UPDATED_EVENT = 'billing:pricing-updated'
+
+/** Notify mounted billing views that the price table was just saved. */
+export function notifyPricingUpdated(): void {
+  window.dispatchEvent(new CustomEvent(PRICING_UPDATED_EVENT))
+}
+
 /** A route failure with the wire code. */
 export class BillingApiError extends Error {
   constructor(readonly code: string, message: string) {

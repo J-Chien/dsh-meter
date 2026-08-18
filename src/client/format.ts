@@ -50,7 +50,13 @@ export function parsePriceInput(text: string, fallback: number): number {
 /** Compact token count: 0, 999, 1.2K, 3.4M. */
 export function formatTokens(tokens: number): string {
   if (tokens < 1_000) return String(tokens)
-  if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}K`
+  if (tokens < 1_000_000) {
+    const k = tokens / 1_000
+    const s = k.toFixed(tokens < 10_000 ? 1 : 0)
+    // Rounding can carry over to 1000K (e.g. 999,999) — promote to M instead.
+    if (Number(s) >= 1000) return `${(tokens / 1_000_000).toFixed(2)}M`
+    return `${s}K`
+  }
   return `${(tokens / 1_000_000).toFixed(2)}M`
 }
 

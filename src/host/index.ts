@@ -89,6 +89,28 @@ function freezeTable(value: PriceTable): PriceTable {
 }
 
 /**
+ * A content revision of the price table (FNV-1a over its canonical JSON).
+ * Mixed into the projection's `stateVersion`: a price edit bumps the version,
+ * so persisted projection checkpoints seeded with OLD prices go stale and
+ * cold reads re-fold the whole log with the current table — otherwise a
+ * checkpoint could silently resurrect pre-edit costs. Same table → same
+ * revision → checkpoints stay valid across restarts.
+ */
+function tableRevision(table: PriceTable): number {
+  const text = JSON.stringify(table)
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+/** Base projection schema version, bumped on fold-state/view shape changes.
+ *  8: fold state keeps only header.config; compactions gains tokens/cost. */
+const STATE_VERSION_BASE = 8
+
+/**
  * The billing host plugin.
  * @param ctx - host plugin context.
  */
@@ -160,22 +182,25 @@ export function apply(ctx: HostContext): void {
           count: zod.number().int().nonnegative(),
           lastTime: zod.number().int().nonnegative().optional(),
           lastShadowedTokens: zod.number().int().nonnegative().optional(),
+          tokens: zod.number().int().nonnegative(),
+          cost: zod.record(zod.string(), zod.number().int().nonnegative()),
         }),
       }) as unknown as zod.ZodType<SessionBillingStats>,
-      init: () => ({ header: undefined, stats: EMPTY_STATS }),
+      init: () => ({ config: undefined, stats: EMPTY_STATS }),
       // The fold keeps full history; bound turns by TURN here so every pushed
       // frame stays at RECENT_TURNS_CAP turns (bounded projection size) while
       // keeping a turn's tool-calling steps together.
       apply: (state, event) => {
         const next = foldEvent(state, event, holder.table)
         if (next.stats.turns.length > RECENT_TURNS_CAP) {
-          return { header: next.header, stats: { ...next.stats, turns: boundTurns(next.stats.turns) } }
+          return { config: next.config, stats: { ...next.stats, turns: boundTurns(next.stats.turns) } }
         }
         return next
       },
       view: state => state.stats,
-      // 7: SessionBillingStats.compactions added (compaction/summary fold).
-      stateVersion: 7,
+      // The table revision participates so a price edit invalidates every
+      // checkpoint folded with old prices (see tableRevision).
+      stateVersion: STATE_VERSION_BASE * 2 ** 20 + (tableRevision(holder.table) % 2 ** 20),
     })
   }
 
@@ -263,7 +288,13 @@ async function settingsUpdate(
   if (body === null || typeof body !== 'object' || body.value === undefined) {
     throw new BillingRouteError('bad-payload', 'missing "value"', 400)
   }
-  const next = priceTableSchema(body.value) as PriceTable
+  // Schema violations are client errors (400), not internal 500s.
+  let next: PriceTable
+  try {
+    next = priceTableSchema(body.value) as PriceTable
+  } catch (error) {
+    throw new BillingRouteError('bad-payload', error instanceof Error ? error.message : String(error), 400)
+  }
   await scope.replace(next)
   return { ok: true }
 }
@@ -311,10 +342,10 @@ async function catalog(ctx: HostContext): Promise<{
 
 /**
  * Recompute one session's billing with the current price table, folding its
- * live event log on demand. The projection's change feed pushes the same
- * result to every connected client right after; this returns it so the card
- * updates immediately without waiting for that frame. Turns are bounded to
- * RECENT_TURNS_CAP (the card only needs the recent few).
+ * live event log on demand. The result is returned only to the CALLING
+ * client (other tabs catch up on the next projection frame); the settings
+ * watcher is what re-mounts the projection after a price change. Turns are
+ * bounded to RECENT_TURNS_CAP (the card only needs the recent few).
  */
 function refreshSession(
   ctx: HostContext,

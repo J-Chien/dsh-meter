@@ -402,14 +402,15 @@
 
 /* The chart box: a fixed-height area where bars grow upward from the
  * baseline; the turn number sits under each bar on the x-axis. Fixed-width
- * columns, chronological left→right — overflow scrolls horizontally
- * instead of compressing the bars. `justify-content: space-between` makes
- * the first and last column hug the edges (symmetric), with the slack
- * spread evenly across the inter-column gaps. */
+ * columns packed LEFT→RIGHT with a uniform 3px gap (timeline order, same
+ * as the detail panel's chart) — overflow scrolls horizontally instead of
+ * compressing the bars. At most one column-width of slack stays at the
+ * right edge, which reads as the timeline's natural extent. */
 .turnsChart {
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 3px;
   height: 56px;
   min-width: 0;
   padding: 0 2px;

@@ -11,13 +11,13 @@ import {
   IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { CONTEXT_WARN_THRESHOLD, EMPTY_STATS, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
+import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, findPriceRow, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { formatPrice, formatTime, formatTokens } from './format.ts'
-import { getPriceTable, refreshSessionStats } from './billing-api.ts'
+import { getPriceTable, refreshSessionStats, PRICING_UPDATED_EVENT } from './billing-api.ts'
 import { requestLocateModel } from './locate.ts'
 import type {} from './types.ts'
 import { BillingLabel } from './BillingLabel.tsx'
-import { NS, type BillingKey } from './locales.ts'
+import { type BillingKey } from './locales.ts'
 import { BillingTurnsPanel } from './BillingTurnsPanel.tsx'
 import { CLICK_DELAY_MS, HOVER_CLOSE_MS, HOVER_OPEN_MS } from './interaction.ts'
 import { Tooltip, useTooltipState } from './Tooltip.tsx'
@@ -47,7 +47,9 @@ function inPeakNow(peakModels: readonly string[], table: PriceTable | null, time
     if (slash <= 0) continue
     const provider = key.slice(0, slash)
     const model = key.slice(slash + 1)
-    const row = table.models.find(m => m.provider === provider && m.model === model)
+    // Peak keys carry no effort; the effort-less (generic) row is the one
+    // whose windows the host fold also consulted for these keys.
+    const row = findPriceRow(table, provider, model, undefined)
     if (row?.periods === undefined) continue
     if (row.periods.some(p => inPeakWindow(p, timeMs))) return true
   }
@@ -107,6 +109,26 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
       if (tableRef.current !== null) setPeakNow(inPeakNow(peakModels, tableRef.current, Date.now()))
     }, 60_000)
     return () => window.clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content
+  }, [peakKey])
+
+  // A settings save may change peak WINDOW HOURS without changing the
+  // peak-model set (peakKey unchanged → the fetch effect above does not
+  // rerun). Refetch on the save event so the tag never judges by stale hours.
+  useEffect(() => {
+    let cancelled = false
+    const onSaved = (): void => {
+      void getPriceTable().then(table => {
+        if (cancelled) return
+        tableRef.current = table
+        setPeakNow(inPeakNow(peakModels, table, Date.now()))
+      }).catch(() => { /* keep the previous table and tag state */ })
+    }
+    window.addEventListener(PRICING_UPDATED_EVENT, onSaved)
+    return () => {
+      cancelled = true
+      window.removeEventListener(PRICING_UPDATED_EVENT, onSaved)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content
   }, [peakKey])
 
@@ -212,7 +234,10 @@ function BillingPopover({ renderTrigger, content }: {
     clearGraceTimer()
   }
 
-  // Fixed-position from the trigger rect; track while open.
+  // Fixed-position from the trigger rect; track while open. The card renders
+  // (hidden) from the first open frame, so this layout effect can measure
+  // cardRef and the flip-up branch works on FIRST open; a ResizeObserver
+  // re-places when the content grows (new projection frames add rows).
   useLayoutEffect(() => {
     if (!open) { setPos(null); return }
     const place = () => {
@@ -221,13 +246,20 @@ function BillingPopover({ renderTrigger, content }: {
       const r = wrapper.getBoundingClientRect()
       triggerBottom.current = r.bottom
       const h = cardRef.current?.offsetHeight ?? 0
+      const w = cardRef.current?.offsetWidth ?? 320
       const top = r.bottom + 8 + h > window.innerHeight - 8 ? Math.max(8, window.innerHeight - h - 8) : r.bottom + 8
-      setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - 320)), top })
+      setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - w)), top })
     }
     place()
+    const cardEl = cardRef.current
+    const observer = cardEl !== null
+      ? new ResizeObserver(() => { place() })
+      : null
+    if (cardEl !== null) observer?.observe(cardEl)
     window.addEventListener('scroll', place, true)
     window.addEventListener('resize', place)
     return () => {
+      observer?.disconnect()
       window.removeEventListener('scroll', place, true)
       window.removeEventListener('resize', place)
     }
@@ -270,11 +302,15 @@ function BillingPopover({ renderTrigger, content }: {
     }
   }
 
-  const card = open && pos !== null && createPortal(
+  // Render the card from the first open frame (hidden until measured) so the
+  // layout effect above can measure its real size immediately.
+  const card = open && createPortal(
     <div
       ref={cardRef}
       className={css.card}
-      style={{ left: pos.left, top: pos.top }}
+      style={pos !== null
+        ? { left: pos.left, top: pos.top }
+        : { visibility: 'hidden' }}
       onPointerEnter={cancelLeave}
       onPointerLeave={scheduleLeave}
     >
@@ -483,13 +519,17 @@ function MetricGrid({ stats, t }: {
  *  face), so a profile overriding it would make the tick approximate. We
  *  keep the tick and say "default".
  *
- *  Forecast model: per-turn NET input growth = difference between each
- *  turn's total input and the previous turn's (a turn's input repeats the
- *  whole history, so the LEVEL is useless — only the DELTA is growth).
- *  Deltas <= 0 are dropped (compaction resets the level). Over the last 10
- *  turns, the trimmed mean of positive deltas (min & max excluded) is the
- *  stable growth rate; ETA = headroom / that rate. Still rough: the harness
- *  meters the whole surface estimate; we only see real usage. */
+ *  Forecast model: per-turn context GROWTH = snapshot deltas (this turn's
+ *  last-request total input minus the previous turn's) — cache-state immune
+ *  (a cache miss replays the whole history as uncached tokens, but the TOTAL
+ *  input snapshot stays the same). Deltas <= 0 are dropped (compaction
+ *  resets the level). Growth is the SMALLER of two trimmed means (min & max
+ *  excluded): over all completed turns AND over the last 10 — early one-off
+ *  loads can't inflate it, a recent light streak can't over-promise. Growth
+ *  comes from COMPLETED turn transitions only (the in-progress turn's
+ *  snapshot keeps growing until it closes). Headroom uses the live snapshot
+ *  (last request's total input). Still rough: the harness meters the whole
+ *  surface estimate; we only see real usage. */
 function ContextBar({ ratio, t, stats }: {
   ratio: number
   t: (key: BillingKey) => string
@@ -505,6 +545,10 @@ function ContextBar({ ratio, t, stats }: {
   const usageText = `${usedK} / ${windowK}${capText}`
   const compactions = stats.compactions
   const compacted = compactions !== undefined && compactions.count > 0
+  // Old host frames (pre-restart) may lack compactions.cost — defend.
+  const compactCostText = Object.entries(compactions?.cost ?? {})
+    .map(([code, units]) => formatPrice(units, currencySymbol(code)))
+    .join(' + ')
 
   // Forecast (see the model note in shared.ts). Growth = snapshot deltas
   // (this turn's last-request total input minus the previous turn's) —
@@ -522,7 +566,7 @@ function ContextBar({ ratio, t, stats }: {
     const growth = estimateCompactionGrowth(completed)
     const eta = estimateCompactionEta(completed, windowTokens, lastInput)
     if (growth !== undefined && eta !== undefined) {
-      const headroom = windowTokens * 0.8 - lastInput
+      const headroom = windowTokens * COMPACT_TRIGGER_RATIO - lastInput
       forecast = t('card.compactEta')
         .replace('{turns}', String(eta))
         .replace('{avg}', formatTokens(Math.round(growth)))
@@ -538,9 +582,13 @@ function ContextBar({ ratio, t, stats }: {
       </div>
       <div className={css.contextTrack}>
         {/* Default compaction trigger line (compaction-basic thresholdRatio
-         *  0.8 × window). Styled thin + translucent so it reads as a
-         *  reference line, not a data mark. */}
-        <div className={css.contextTrigger} style={{ left: '80%' }} title={t('card.compactTrigger')} />
+         *  × window). Styled thin + translucent so it reads as a reference
+         *  line, not a data mark. The Tooltip wrapper span is in-flow with a
+         *  zero-size box, so the line's absolute positioning (containing
+         *  block = contextTrack) is unaffected. */}
+        <Tooltip label={t('card.compactTrigger')}>
+          <div className={css.contextTrigger} style={{ left: `${COMPACT_TRIGGER_RATIO * 100}%` }} />
+        </Tooltip>
         <div className={`${css.contextFill}${near ? ` ${css.contextFillNear}` : ''}`} style={{ width: `${pct}%` }} />
       </div>
       {compacted
@@ -549,7 +597,10 @@ function ContextBar({ ratio, t, stats }: {
             {t('card.compactDone')
               .replace('{count}', String(compactions.count))
               .replace('{time}', compactions.lastTime !== undefined ? formatTime(compactions.lastTime) : '—')
-              .replace('{tokens}', compactions.lastShadowedTokens !== undefined ? formatTokens(compactions.lastShadowedTokens) : '—')}
+              .replace('{tokens}', compactions.lastShadowedTokens !== undefined ? formatTokens(compactions.lastShadowedTokens) : '—')
+              .replace('{cost}', compactCostText === ''
+                ? ''
+                : t('card.compactCost').replace('{cost}', compactCostText))}
           </div>
         )
         : null}
@@ -566,10 +617,12 @@ function ContextBar({ ratio, t, stats }: {
  *  peak rate). Hover shows the full picture: turn, token usage, cost, hit
  *  rate. Bars keep a fixed width; the chart measures its own width and
  *  shows as many recent turns as fit — no hardcoded count. */
-/** One bar in the mini chart: the turn's NET context growth (uncached
- *  input + output; cache read/write excluded — reads are history re-reads,
- *  writes are this turn's own input). Tooltip carries the same net plus
- *  the turn's real cost and hit rate. */
+/** One bar in the mini chart: the turn's context GROWTH as a snapshot delta
+ *  (this turn's last-request total input minus the previous turn's) —
+ *  cache-state immune, since a cache miss replays history as uncached tokens
+ *  but the total snapshot stays the same. The first turn has no predecessor
+ *  → no growth bar. Tooltip carries the same growth plus the turn's real
+ *  cost and hit rate. */
 function TurnBar({ turn, level, max, t }: {
   turn: TurnSummary
   level: number
@@ -604,14 +657,16 @@ function TurnsBarChart({ turns, t }: {
   // Bar height + tooltip use the turn's SNAPSHOT-DELTA growth: this turn's
   // last-request total input minus the previous turn's. Cache-state immune
   // (a cache miss replays history as uncached but the total is the same).
-  // The first turn has no predecessor → no growth bar (it contributes 0).
-  const growths = turnGrowths(turns)
-  const growthByTurn = new Map<number, number>()
-  aggregated.forEach((turn, i) => growthByTurn.set(turn.turn, i > 0 ? growths[i - 1] ?? 0 : 0))
+  // TURN 1's growth is its whole snapshot (its predecessor is the empty
+  // context — everything it loaded is new occupancy); the earliest turn of
+  // a truncated frame stays unkeyed (its predecessor is outside the window).
+  // Keyed by turn number, so a multi-currency turn (two aggregated rows)
+  // still reads the same growth — no index-alignment drift.
+  const growthByTurn = turnGrowthByTurn(turns)
   // Fit count from the measured strip width: each column is 18px and needs
   // a 3px breathing gap, so 21px per column; the 4px is the 2×2px strip
-  // padding. space-between spreads the leftover evenly. Falls back to 10
-  // before the first measure lands.
+  // padding. Columns pack left→right (uniform 3px gap, timeline order) and
+  // overflow scrolls. Falls back to 10 before the first measure lands.
   const stripRef = useRef<HTMLDivElement>(null)
   const [fit, setFit] = useState(10)
   useEffect(() => {
@@ -636,7 +691,7 @@ function TurnsBarChart({ turns, t }: {
       </div>
       <div ref={stripRef} className={css.turnsChart}>
         {recent.map((turn) => (
-          <TurnBar key={turn.turn} turn={turn} level={growthByTurn.get(turn.turn) ?? 0} max={max} t={t} />
+          <TurnBar key={`${turn.turn}:${turn.currency}`} turn={turn} level={growthByTurn.get(turn.turn) ?? 0} max={max} t={t} />
         ))}
       </div>
     </div>

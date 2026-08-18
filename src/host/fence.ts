@@ -33,6 +33,21 @@ function isLoopbackAuthority(authority: string): boolean {
 /** Decide whether one request may reach the billing routes. */
 export function billingFence(req: FenceRequest): boolean {
   const host = header(req.headers, 'host')
-  if (host === undefined) return false
-  return isLoopbackAuthority(host)
+  if (host === undefined || !isLoopbackAuthority(host)) return false
+  // CSRF hardening on top of the loopback fence (every route is a POST that
+  // mutates local settings):
+  //  - a browser fetch that crosses sites is marked `sec-fetch-site:
+  //    cross-site` — refuse it outright (same-origin/same-site/none pass);
+  //  - every route consumes a JSON body, so demand the JSON content type: a
+  //    cross-origin form / no-cors POST cannot set `application/json`, and
+  //    setting it from another origin triggers a CORS preflight this server
+  //    never answers — either way the write never lands.
+  const secFetchSite = header(req.headers, 'sec-fetch-site')
+  if (secFetchSite !== undefined
+    && secFetchSite !== 'same-origin'
+    && secFetchSite !== 'same-site'
+    && secFetchSite !== 'none') return false
+  const contentType = header(req.headers, 'content-type')
+  if (contentType === undefined || !contentType.startsWith('application/json')) return false
+  return true
 }

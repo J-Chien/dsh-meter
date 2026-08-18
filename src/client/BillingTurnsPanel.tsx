@@ -95,7 +95,8 @@ function TurnChart({ rows, dimension, t, dense = false }: {
   const labelEvery = dense
     ? (rows.length > 80 ? 8 : rows.length > 40 ? 4 : 2)
     : (rows.length > 40 ? 4 : rows.length > 20 ? 2 : 1)
-  // Axis unit: the dominant currency symbol for cost, "tok" for tokens.
+  // Axis unit: the alphabetically first currency symbol for cost (a
+  // cross-currency axis is only approximate anyway), "tok" for tokens.
   const symbol = dimension === 'cost'
     ? currencySymbol(rows.map(r => r.currency).sort((a, b) => a.localeCompare(b))[0] ?? 'CNY')
     : ''
@@ -173,7 +174,7 @@ function TurnChart({ rows, dimension, t, dense = false }: {
 }
 
 /** The numeric cell columns shared by turn rows, turn-group headers and request rows. */
-function TokenCells({ row, t }: { row: TurnCost | TurnSummary; t: (key: BillingKey) => string }) {
+function TokenCells({ row, t, costText }: { row: TurnCost | TurnSummary; t: (key: BillingKey) => string; costText?: string }) {
   const uncached = row.inputTokens - row.cacheReadTokens - row.cacheWriteTokens
   return (
     <>
@@ -183,7 +184,7 @@ function TokenCells({ row, t }: { row: TurnCost | TurnSummary; t: (key: BillingK
       <td className={css.tdNum}>{formatTokens(row.outputTokens)}</td>
       <td className={css.tdNum}>{`${Math.round(row.cacheHitRate * 100)}%`}</td>
       <td className={css.tdNum}>
-        {row.priced ? formatPrice(row.cost, currencySymbol(row.currency)) : <span className={css.unpricedTag}>{t('turn.unpriced')}</span>}
+        {costText ?? (row.priced ? formatPrice(row.cost, currencySymbol(row.currency)) : <span className={css.unpricedTag}>{t('turn.unpriced')}</span>)}
       </td>
     </>
   )
@@ -242,6 +243,10 @@ export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurns
   // Turn numbers expanded in the "按请求" view (default: none — collapsed).
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set())
   const hasPeak = stats.hasPeakConfig === true
+  // Guards the manual refresh's setState after unmount (the initial load
+  // effect has its own cancelled flag).
+  const aliveRef = useRef(true)
+  useEffect(() => () => { aliveRef.current = false }, [])
 
   // The chart follows the view toggle, in log order (oldest on the left,
   // newest on the right — the time axis increases left→right). "按轮次"
@@ -335,7 +340,15 @@ export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurns
               onClick={() => {
                 setLoading(true)
                 setFailed(false)
-                void getTurns(sessionId).then(full => { setTurns(full); setLoading(false) }).catch(() => { setFailed(true); setLoading(false) })
+                void getTurns(sessionId).then(full => {
+                  if (!aliveRef.current) return
+                  setTurns(full)
+                  setLoading(false)
+                }).catch(() => {
+                  if (!aliveRef.current) return
+                  setFailed(true)
+                  setLoading(false)
+                })
               }}
             >
               {t('refresh.title')}
@@ -445,8 +458,9 @@ function TurnGroupRows({ group, open, hasPeak, t, onToggle }: {
   onToggle: () => void
 }) {
   // Aggregate the whole group: a multi-currency turn produces one summary per
-  // currency, so the header shows summed buckets/cost and the last request's
-  // time/period (the summary carries the per-currency first row).
+  // currency. Token buckets sum safely (they are currency-free); COST must
+  // never mix currencies, so the header lists one amount per currency
+  // (`¥1.20 + $0.35`, same as the header badge) instead of a false total.
   const summary = aggregateTurns(group.requests)
   const totalCost = summary.reduce((acc, s) => acc + s.cost, 0)
   const totalInput = summary.reduce((acc, s) => acc + s.inputTokens, 0)
@@ -471,6 +485,11 @@ function TurnGroupRows({ group, open, hasPeak, t, onToggle }: {
     priced: group.requests.every(r => r.priced),
     requests: group.requests.length,
   }
+  // Per-currency cost text; undefined keeps TokenCells' own display (the
+  // 「未登记」 tag when not every request is priced — semantics unchanged).
+  const costText = headerRow.priced
+    ? summary.map(s => formatPrice(s.cost, currencySymbol(s.currency))).join(' + ')
+    : undefined
   return (
     <>
       <tr className={css.groupHead} onClick={onToggle}>
@@ -480,7 +499,7 @@ function TurnGroupRows({ group, open, hasPeak, t, onToggle }: {
           <span className={css.groupCount}>{`${group.requests.length} ${t('turn.group.requests')}`}</span>
         </td>
         <td className={css.tdNum}>{formatTime(headerRow.time)}</td>
-        <TokenCells row={headerRow} t={t} />
+        <TokenCells row={headerRow} t={t} costText={costText} />
         {hasPeak ? (
           <td className={`${css.tdPeriod}${headerRow.period === 'peak' ? ` ${css.tdPeriodPeak}` : ''}`}>
             {headerRow.period === 'peak' ? t('period.peak') : t('period.offPeak')}

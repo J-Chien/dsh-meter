@@ -14,13 +14,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  getPriceTable, getProviderCatalog, updatePriceTable,
+  getPriceTable, getProviderCatalog, updatePriceTable, notifyPricingUpdated,
   type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier, type ProviderCatalogRow, type ModelCapability,
 } from './billing-api.ts'
 import { parsePriceInput, priceToInput, parseKTokensInput, kTokensToInput, formatTokens } from './format.ts'
 import { consumeLocateModel, LOCATE_EVENT, type LocateModelRequest } from './locate.ts'
 import { BillingLabel } from './BillingLabel.tsx'
-import { NS, type BillingKey } from './locales.ts'
+import { type BillingKey } from './locales.ts'
 import './theme.module.css'
 import css from './BillingSettings.module.css'
 
@@ -80,15 +80,15 @@ function seedTier(input: number, output: number, cacheInput: number, cacheWrite:
 
 /** Build the editor rows: catalog providers × their models, seeded with prices. */
 function buildEditor(catalog: ProviderCatalogRow[], table: PriceTable): ProviderEdit[] {
-  // Seed from the effort-less row when both exist: the editor cannot
-  // represent reasoningEffort-keyed rows (they are preserved on save).
+  // Seed ONLY from effort-less rows: the editor cannot represent
+  // reasoningEffort-keyed rows (they are preserved on save), and seeding
+  // from an effort row would duplicate it into a new effort-less row on
+  // save, splitting the config. A model with only effort rows shows empty
+  // (未登记) here — its effort rows still bill and survive saves.
   const byKey = new Map<string, ModelPrice>()
   for (const m of table.models) {
-    const key = `${m.provider}/${m.model}`
-    const prev = byKey.get(key)
-    if (prev === undefined || (prev.reasoningEffort !== undefined && m.reasoningEffort === undefined)) {
-      byKey.set(key, m)
-    }
+    if (m.reasoningEffort !== undefined) continue
+    byKey.set(`${m.provider}/${m.model}`, m)
   }
   return catalog.map(provider => {
     const providerCurrency = table.providers[provider.id] ?? { currency: 'CNY' as const, currencySymbol: '¥' }
@@ -161,6 +161,12 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
   const [saving, setSaving] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Clear the "saved" flash timer on unmount (no setState after unmount).
+  useEffect(() => () => {
+    if (flashTimer.current !== null) clearTimeout(flashTimer.current)
+  }, [])
   // All provider groups start collapsed; the first successful load seeds the
   // collapsed set with every provider id (ids are only known after the load).
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
@@ -289,8 +295,12 @@ export function BillingSettingsSection({ t }: BillingSettingsSectionProps) {
         if (!(id in providers) && models.some(m => m.provider === id)) providers[id] = currency
       }
       await updatePriceTable({ providers, models })
+      // Tell mounted header actions to refetch the table — a save can change
+      // peak window hours without changing their peak-model set.
+      notifyPricingUpdated()
       setSavedFlash(true)
-      setTimeout(() => setSavedFlash(false), 1500)
+      if (flashTimer.current !== null) clearTimeout(flashTimer.current)
+      flashTimer.current = setTimeout(() => setSavedFlash(false), 1500)
     } catch (error) {
       // Surface the failure next to the save button (the load-time error pane
       // is not mounted here, so a swallowed error would look like a hang).
@@ -387,7 +397,7 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onModel }
             </select>
           </label>
           <span className={css.unitHint}>
-            {t('settings.unit.label')}：{provider.currencySymbol}/{t('settings.unit.million')}
+            {t('settings.unit.label')}{provider.currencySymbol}/{t('settings.unit.million')}
           </span>
         </div>
       </div>
@@ -462,16 +472,18 @@ function PriceInput({ value, onChange, ariaLabel }: {
  * `24:00` for a window closing at midnight). Commits only the hour — the
  * minutes are always :00; empty/invalid input reverts to the previous hour.
  */
-function HourInput({ value, max, onChange, ariaLabel }: {
+function HourInput({ value, min = 0, max, onChange, ariaLabel }: {
   value: number
+  /** Clamp lower bound; the schema requires endHour ≥ 1, so ends pass 1. */
+  min?: number
   max: number
   onChange: (next: number) => void
   ariaLabel?: string
 }) {
   const [draft, setDraft] = useState(() => `${value}:00`)
   const [focused, setFocused] = useState(false)
-  const latest = useRef({ draft, value, onChange })
-  latest.current = { draft, value, onChange }
+  const latest = useRef({ draft, value, onChange, min })
+  latest.current = { draft, value, onChange, min }
 
   useEffect(() => {
     if (!focused) setDraft(`${value}:00`)
@@ -479,16 +491,16 @@ function HourInput({ value, max, onChange, ariaLabel }: {
 
   // Commit the pending draft on unmount (see PriceInput).
   useEffect(() => () => {
-    const { draft: d, value: v, onChange: oc } = latest.current
+    const { draft: d, value: v, onChange: oc, min: lo } = latest.current
     const parsed = Number.parseInt(d, 10)
-    const next = Number.isNaN(parsed) ? v : Math.min(Math.max(parsed, 0), max)
+    const next = Number.isNaN(parsed) ? v : Math.min(Math.max(parsed, lo), max)
     if (next !== v) oc(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- max is a stable prop
   }, [])
 
   const commit = (): void => {
     const parsed = Number.parseInt(draft, 10)
-    const next = Number.isNaN(parsed) ? value : Math.min(Math.max(parsed, 0), max)
+    const next = Number.isNaN(parsed) ? value : Math.min(Math.max(parsed, min), max)
     setDraft(`${next}:00`)
     if (next !== value) onChange(next)
   }
@@ -763,7 +775,10 @@ function PeriodEditor({ period, modelTiers, t, onChange, onRemove }: {
       [key]: v,
       tiers: p.tiers !== undefined && p.tiers.length > 0
         ? p.tiers.map((tier, j) => (j === 0 ? { ...tier, [key]: v } : tier))
-        : [seedTier(p.input, p.output, p.cacheInput, p.cacheWrite ?? 0)],
+        // Legacy periods without tiers: seed tier 0 WITH this edit applied —
+        // seeding from the pre-edit flat prices would swallow the first edit
+        // (the display prefers tier 0 over the flat fields).
+        : [{ ...seedTier(p.input, p.output, p.cacheInput, p.cacheWrite ?? 0), [key]: v }],
     }))
   }
 
@@ -775,7 +790,7 @@ function PeriodEditor({ period, modelTiers, t, onChange, onRemove }: {
             onChange={v => onChange(p => ({ ...p, startHour: v }))} ariaLabel={t('settings.peak.start')} />
         </label>
         <label className={css.miniLabel}>{t('settings.peak.end')}
-          <HourInput value={period.endHour} max={24}
+          <HourInput value={period.endHour} min={1} max={24}
             onChange={v => onChange(p => ({ ...p, endHour: v }))} ariaLabel={t('settings.peak.end')} />
         </label>
         <button type="button" className={css.removePeriod} onClick={onRemove} aria-label={t('settings.peak.remove')}>×</button>

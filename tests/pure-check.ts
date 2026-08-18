@@ -4,9 +4,10 @@ import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, EMPTY_STATS } from '../src/host/session-stats.ts'
-import { aggregateTurns, turnSnapshots, turnGrowths, estimateCompactionGrowth, estimateCompactionEta } from '../src/shared.ts'
+import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow } from '../src/shared.ts'
 import type { PriceTable } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
+import { billingFence } from '../src/host/fence.ts'
 
 // --- priceTokens ---
 assert.equal(priceTokens(1_000_000, cnyPerMillion(10.155)), 1_015_500, '1M @10.155/M = 10.155')
@@ -164,6 +165,42 @@ assert.equal(compacted.compactions.count, 1, 'compaction/summary increments the 
 assert.equal(compacted.compactions.lastTime, at('2026-08-17T23:30:00+08:00'), 'last compaction time recorded')
 assert.equal(compacted.compactions.lastShadowedTokens, 12_345, 'shadowed token count recorded')
 assert.equal(foldBilling(log, table).compactions.count, 0, 'no compaction events → count 0')
+
+// --- compaction/summary WITH usage: the summarization call is priced into
+//     the session totals AND attributed on compactions (its tokens stay out
+//     of the conversation buckets so the hit rate is not diluted) ---
+const compactionWithUsage = {
+  type: 'compaction/summary', seq: 9, time: at('2026-08-17T23:30:00+08:00'),
+  data: {
+    compactionId: 'c-1',
+    summary: [],
+    shadowedRange: { start: 1, end: 4 },
+    shadowedSeqs: [1, 2, 3, 4],
+    shadowedTokenCount: 12_345,
+    provider: 'wpsai',
+    model: 'deepseek/deepseek-v4-flash',
+    usage: { inputTokens: 50_000, outputTokens: 1_000, cacheReadTokens: 30_000 },
+  },
+} as SessionEvent
+const compactedUsage = foldBilling([...log, compactionWithUsage], table)
+// 23:30 is inside the 22→6 peak window → the summary call bills at peak prices.
+const summaryCost = priceTokens(50_000, cnyPerMillion(1.5)) + priceTokens(30_000, cnyPerMillion(0.03)) + priceTokens(1_000, cnyPerMillion(3))
+assert.equal(compactedUsage.cost['CNY'], (stats.cost['CNY'] ?? 0) + summaryCost, 'summarization cost joins the session totals')
+assert.equal(compactedUsage.compactions.cost['CNY'], summaryCost, 'summarization cost attributed on compactions')
+assert.equal(compactedUsage.compactions.tokens, 81_000, 'summarization tokens accumulated on compactions')
+assert.equal(compactedUsage.uncachedInputTokens, 180, 'summary tokens stay OUT of the conversation buckets')
+assert.equal(compactedUsage.requestCount, 3, 'the summary call counts as a priced request')
+assert.equal(compactedUsage.byPeriod['CNY']!.peak, (stats.byPeriod['CNY']!.peak) + summaryCost, 'summary cost lands in its peak split')
+assert.equal(compactedUsage.turns.length, 2, 'no phantom turn row for the summary call')
+// An UNPRICED summary model counts as unpriced but adds no cost.
+const compactedUnpriced = foldBilling([...log, {
+  ...compactionWithUsage,
+  data: { ...compactionWithUsage.data, provider: 'wpsai', model: 'no/such-model' },
+} as SessionEvent], table)
+assert.equal(compactedUnpriced.unpricedRequestCount, 1, 'unpriced summary call counted')
+assert.equal(compactedUnpriced.cost['CNY'], stats.cost['CNY'], 'unpriced summary adds no cost')
+assert.equal(compactedUnpriced.compactions.tokens, 81_000, 'unpriced summary tokens still counted')
+assert.deepEqual(compactedUnpriced.compactions.cost, {}, 'unpriced summary adds no compaction cost')
 
 console.log('COMPACTION FOLD CHECK PASSED')
 
@@ -488,7 +525,7 @@ assert.deepEqual(dtOnly, {
 console.log('ALL NEW CHECKS PASSED')
 
 // --- foldEvent: an unchanged request/header config is a no-op (same state object) ---
-const firstHeader = foldEvent({ header: undefined, stats: EMPTY_STATS }, hdr(at('2026-08-17T12:00:00+08:00')), table)
+const firstHeader = foldEvent({ config: undefined, stats: EMPTY_STATS }, hdr(at('2026-08-17T12:00:00+08:00')), table)
 const sameHeader = foldEvent(firstHeader, hdr(at('2026-08-17T12:05:00+08:00')), table)
 assert.equal(sameHeader, firstHeader, 'unchanged header config returns the same state (no no-op frame)')
 
@@ -521,3 +558,84 @@ assert.equal(Math.abs(turn1.cacheHitRate - 30 / 140) < 1e-9, true, 'hit rate re-
 assert.equal(aggregateTurns([]).length, 0, 'empty input → empty output')
 
 console.log('AGGREGATE TURNS CHECK PASSED')
+
+// --- reasoningEffort precedence: an exact effort row wins over the generic
+//     row regardless of array order; a request without effort never matches
+//     an effort-specific row ---
+const effortTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [
+    // Generic row FIRST in the array — array order must not decide the match.
+    { provider: 'wpsai', model: 'm', input: cnyPerMillion(1), output: cnyPerMillion(1), cacheInput: 0 },
+    { provider: 'wpsai', model: 'm', reasoningEffort: 'high', input: cnyPerMillion(5), output: cnyPerMillion(5), cacheInput: 0 },
+  ],
+}
+assert.equal(findPriceRow(effortTable, 'wpsai', 'm', 'high')?.input, cnyPerMillion(5), 'exact effort row wins over the generic row')
+assert.equal(findPriceRow(effortTable, 'wpsai', 'm', undefined)?.input, cnyPerMillion(1), 'no-effort request matches only the generic row')
+assert.equal(findPriceRow(effortTable, 'wpsai', 'm', 'low')?.input, cnyPerMillion(1), 'unknown effort falls back to the generic row')
+assert.equal(effectivePrice(effortTable, 'wpsai', 'm', 'high', Date.now()).input, cnyPerMillion(5), 'effectivePrice honors effort precedence')
+assert.equal(effectivePrice(effortTable, 'wpsai', 'm', undefined, Date.now()).input, cnyPerMillion(1), 'effectivePrice: no effort → generic row')
+
+console.log('EFFORT PRECEDENCE CHECK PASSED')
+
+// --- overnight window × days: days filter by the window's START day ---
+// 2026-08-21 is a Friday (getDay 5); 2026-08-22 a Saturday (getDay 6).
+const fridayPeak = { startHour: 22, endHour: 6, days: [5], input: 1, output: 1, cacheInput: 1 }
+assert.equal(inPeakWindow(fridayPeak, at('2026-08-21T23:00:00+08:00')), true, 'Fri 23:00 in Friday window')
+assert.equal(inPeakWindow(fridayPeak, at('2026-08-22T02:00:00+08:00')), true, 'Sat 02:00 belongs to the Friday-opened window')
+assert.equal(inPeakWindow(fridayPeak, at('2026-08-22T23:00:00+08:00')), false, 'Sat 23:00 opens a Saturday window — not configured')
+assert.equal(inPeakWindow(fridayPeak, at('2026-08-21T12:00:00+08:00')), false, 'Fri noon outside the window')
+// start === end reads as "all day".
+const allDay = { startHour: 9, endHour: 9, input: 1, output: 1, cacheInput: 1 }
+assert.equal(inPeakWindow(allDay, at('2026-08-17T00:00:00+08:00')), true, 'start==end: midnight inside')
+assert.equal(inPeakWindow(allDay, at('2026-08-17T12:00:00+08:00')), true, 'start==end: noon inside')
+
+console.log('OVERNIGHT DAYS CHECK PASSED')
+
+// --- fence: loopback + JSON content-type + no cross-site fetch ---
+const fenceReq = (headers: Record<string, string>) => ({ headers: headers as never })
+assert.equal(billingFence(fenceReq({ host: 'localhost:3000', 'content-type': 'application/json' })), true, 'loopback + json passes')
+assert.equal(billingFence(fenceReq({ host: '127.0.0.1:3000', 'content-type': 'application/json; charset=utf-8' })), true, '127.0.0.1 + json passes')
+assert.equal(billingFence(fenceReq({ host: 'localhost:3000', 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' })), true, 'same-origin passes')
+assert.equal(billingFence(fenceReq({ host: 'localhost:3000', 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' })), false, 'cross-site fetch refused (CSRF)')
+assert.equal(billingFence(fenceReq({ host: 'localhost:3000', 'content-type': 'text/plain' })), false, 'no-cors form content-type refused')
+assert.equal(billingFence(fenceReq({ host: 'localhost:3000' })), false, 'missing content-type refused')
+assert.equal(billingFence(fenceReq({ host: 'example.com', 'content-type': 'application/json' })), false, 'non-loopback host refused')
+assert.equal(billingFence(fenceReq({ 'content-type': 'application/json' })), false, 'missing host refused')
+
+console.log('FENCE CHECK PASSED')
+
+// --- unpriced request keeps the provider's currency (not hardcoded CNY) ---
+const unpricedCurrencyLog: SessionEvent[] = [
+  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'google', model: 'gemini-unknown' } }, reason: 'initial' } },
+  msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
+]
+const unpricedCurrency = foldBilling(unpricedCurrencyLog, multiTable)
+assert.equal(unpricedCurrency.unpricedRequestCount, 1)
+assert.equal(unpricedCurrency.turns[0]!.currency, 'USD', 'unpriced request groups under the provider currency')
+
+console.log('UNPRICED CURRENCY CHECK PASSED')
+
+// --- turnGrowthByTurn: keyed by turn number, immune to currency splits;
+//     TURN 1's growth is its whole snapshot (its predecessor is the empty
+//     context — everything the first turn loaded is new occupancy), while
+//     the earliest turn of a TRUNCATED frame stays unkeyed (its predecessor
+//     is outside the window, so its whole snapshot is not growth) ---
+const growthMap = turnGrowthByTurn([
+  ...snapRows,
+  // A USD row INSIDE turn 2 (multi-currency turn): snapshots stay per-turn.
+  { turn: 2, step: 2, time: 4, inputTokens: 70_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'USD', period: 'off-peak', priced: true },
+])
+assert.equal(growthMap.get(1), 55_000, 'turn 1 growth = its whole snapshot')
+assert.equal(growthMap.get(2), 70_000 - 55_000, 'turn 2 growth keyed by turn number, last request wins across currencies')
+assert.equal(turnGrowthByTurn([]).size, 0, 'empty input → empty map')
+// A truncated frame (turn 1 absent): its earliest turn has an unknown
+// predecessor, so its whole snapshot must NOT be reported as growth.
+const truncatedMap = turnGrowthByTurn([
+  { turn: 3, step: 1, time: 5, inputTokens: 90_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+  { turn: 4, step: 1, time: 6, inputTokens: 95_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 100, cacheHitRate: 0, cost: 0, currency: 'CNY', period: 'off-peak', priced: true },
+])
+assert.equal(truncatedMap.has(3), false, 'earliest turn of a truncated frame stays unkeyed')
+assert.equal(truncatedMap.get(4), 5_000, 'later turns keep snapshot deltas')
+
+console.log('TURN GROWTH MAP CHECK PASSED')

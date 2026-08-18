@@ -4,7 +4,6 @@
  * the Loader.
  */
 export * from './host/index.ts'
-export { PRICING_NS } from './host/index.ts'
 export { foldBilling, foldEvent, EMPTY_STATS } from './host/session-stats.ts'
 export type { SessionBillingStats } from './shared.ts'
 export { effectivePrice, priceTokens, inPeakWindow, formatPrice, PRICE_PRECISION } from './host/price.ts'
