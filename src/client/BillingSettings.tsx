@@ -37,8 +37,8 @@ export interface BillingSettingsInjected {
 }
 
 /** Full props for the billing settings card. The native
- *  `settings.plugin.item` slot is keyed by namespace and supplies no owner
- *  props (no `close`, no `children`) — only what apply injects. */
+ *  `settings.plugin.item` slot supplies no owner props (`close`, `children`)
+ *  — only what apply injects. */
 export type BillingSettingsCardProps = BillingSettingsInjected
 
 /** Per-provider editor state. */
