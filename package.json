@@ -1,6 +1,6 @@
 {
   "name": "dsh-meter",
-  "version": "0.3.18",
+  "version": "0.3.18.1",
   "description": "Per-session billing plugin for DeepSeek Harness: token buckets, cache hit rate, and peak-aware cost in the session header + a price-table settings page",
   "type": "module",
   "main": "lib/index.js",

@@ -5,6 +5,12 @@
 
 ---
 
+### v0.3.18.1（修复：上下文占用条被裁掉不可见）
+
+- **上下文占用条回归修复（P0）**：卡片中的上下文进度条（`上下文占用 N% · 已用 / 窗口`）在 v0.3.16 的 K3 审查批次把压缩触发线包进 `<Tooltip>` 后**渲染但不可见**——Tooltip 的锚点 `<span>`（`display:inline-flex`、继承 16px 行高）是 `contextTrack` 的**文档流内**元素，把紧随其后的静态定位 `contextFill` 推到 4px 轨道下方 ~18px，被轨道的 `overflow:hidden` 整个裁掉。修复：`contextFill` 改为 `position:absolute; top:0; left:0`，作为 `contextTrack`（`position:relative`）的定位子元素，与触发线同层；此后任何文档流内兄弟元素都无法再把进度条挤出轨道。已在真实浏览器验证：修复前轨道 y=447 / 填充 y=465（18px 间隙、被裁），修复后两者同 y、填充可见。
+
+---
+
 ### v0.3.18（deepseek-harness rc.7 适配：设置迁移原生机制）
 
 - **设置页迁移为原生设置卡片（P0，rc.7 新机制）**：独立 `settings.section` 计费页下线，改为按命名空间 `billing-pricing` 键控注册 `settings.plugin.item` 卡片（`@deepseek-ai/dsh-client-ui-settings-plugins`），出现在设置面板的「插件」配置页。卡片 chrome **1:1 对齐内置 `PluginCard`**（折叠头 = 名称 + 描述 + 「未保存」pill + 箭头；正文 = 只读提示 + 编辑区 + 失败/放弃/保存页脚；不可用命名空间整卡不渲染）——内置 `PluginCard`/`CardForm` 不对外开放（值不可导入），按其发布实现复刻（新增 dirty 追踪与放弃按钮，语义同款：任何编辑置脏、保存/放弃清脏）。

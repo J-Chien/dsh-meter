@@ -114,7 +114,10 @@ pnpm typecheck          # tsc --noEmit（src + tests 两个配置）
 pnpm test               # node tests/pure-check.ts（node ≥22.18 原生跑 TS，无需 tsx）
 pnpm build              # 一次性构建：tsc(lib/types) + tsdown(lib/index.js + lib/client.js)
 pnpm dev:watch          # tsdown --watch：client 改动自动重建 → GUI 热更新
+node scripts/verify-card.mjs   # 渲染回归 sanity：headless 打开 GUI 校验上下文进度条可见（需本机 Chrome + 运行中的 dsh web；见下）
 ```
+
+> **UI/卡片改动后跑一遍 `node scripts/verify-card.mjs`**：它断言卡片上下文进度条的填充与轨道重叠且被绘制。纯逻辑测试（`pnpm test`）抓不到这类 CSS 布局回归（曾出现过：进度条渲染了但被 `overflow:hidden` 裁掉，见 [docs/postmortem/2026-08-18-context-bar-regression.md](docs/postmortem/2026-08-18-context-bar-regression.md)）。可配 `CHROME_BIN` / `DSH_URL` / `SESSION_HINT` / `--url` / `--session-hint`。
 
 ### 热更新开发循环
 
@@ -151,6 +154,7 @@ dsh-meter/
 ├── README.md               # 本文档
 ├── docs/
 │   ├── prd/                # PRD.md（当前规格）+ CHANGELOG.md（迭代记录）+ archive/（归档设计稿）
+│   ├── postmortem/         # 踩坑记录（时间 / 问题 / 解决办法 / 经验教训，供后续开发参考）
 │   ├── review/             # 代码审查记录
 │   └── screenshots/        # 效果截图
 ├── src/
@@ -185,6 +189,8 @@ dsh-meter/
 └── tests/
     └── pure-check.ts       # 纯逻辑断言（node 直接跑）：计价/时段/多币种/未登记/折叠
 ```
+
+另有 `scripts/verify-card.mjs`（渲染回归 sanity，见上文「常用命令」）与 `docs/postmortem/`（踩坑记录）。
 
 ## 第三方插件要点（给后续开发）
 

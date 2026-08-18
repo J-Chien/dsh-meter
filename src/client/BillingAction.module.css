@@ -521,6 +521,15 @@
 }
 
 .contextFill {
+  /* Absolutely positioned inside the track: the track is the containing
+   * block (`position: relative` + `overflow: hidden`), and the compaction
+   * trigger line's Tooltip anchor span is IN-FLOW — without absolute
+   * positioning the fill's static position lands below the anchor's line
+   * box (a zero-size 16px inline-flex), pushing the bar out of the 4px
+   * track and getting clipped away by `overflow: hidden`. */
+  position: absolute;
+  top: 0;
+  left: 0;
   height: 100%;
   border-radius: 2px;
   background: var(--billing-text-secondary);
