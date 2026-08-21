@@ -438,6 +438,23 @@ const defaultZai47 = DEFAULT_TABLE.models.find(m => m.provider === 'zai' && m.mo
 assert.ok(defaultZai47 !== undefined && defaultZai47.tiers?.length === 3, 'default table has glm-4.7 with 3 tiers')
 assert.equal(DEFAULT_TABLE.providers.zai?.currency, 'CNY', 'zai provider defaults to CNY')
 
+// --- default table covers the newly added mainstream providers ---
+const defaultGptLuna = DEFAULT_TABLE.models.find(m => m.provider === 'openai' && m.model === 'gpt-5.6-luna')
+assert.ok(defaultGptLuna !== undefined && defaultGptLuna.tiers?.length === 2, 'default table has gpt-5.6-luna with 2 tiers (≤272K / >272K)')
+assert.equal(DEFAULT_TABLE.providers.openai?.currency, 'USD', 'openai provider defaults to USD')
+assert.ok(DEFAULT_TABLE.models.some(m => m.provider === 'anthropic' && m.model === 'claude-opus-5'), 'default table has anthropic claude-opus-5')
+assert.ok(DEFAULT_TABLE.models.some(m => m.provider === 'google' && m.model === 'gemini-3.6-flash'), 'default table has google gemini-3.6-flash')
+assert.ok(DEFAULT_TABLE.models.some(m => m.provider === 'xai' && m.model === 'grok-4.6'), 'default table has xai grok-4.6')
+assert.ok(DEFAULT_TABLE.models.some(m => m.provider === 'mistral' && m.model === 'mistral-small-4.0'), 'default table has mistral')
+const defaultDeepseek = DEFAULT_TABLE.models.find(m => m.provider === 'deepseek-official' && m.model === 'deepseek-v4-flash')
+assert.ok(defaultDeepseek !== undefined, 'default table has deepseek-official v4-flash')
+assert.equal(DEFAULT_TABLE.providers['deepseek-official']?.currency, 'CNY', 'deepseek-official provider defaults to CNY')
+assert.equal(DEFAULT_TABLE.providers.moonshot?.currency, 'CNY', 'moonshot provider defaults to CNY')
+assert.equal(DEFAULT_TABLE.providers.tencent?.currency, 'CNY', 'tencent provider defaults to CNY')
+// 换算自检:USD 目录价 ×7.2 落到 CNY 时,0.95/4/0.16 → ¥6.84/28.8/1.152(四舍五入到精度单位)。
+const defaultKimi26 = DEFAULT_TABLE.models.find(m => m.provider === 'moonshot' && m.model === 'kimi-k2.6')
+assert.ok(defaultKimi26 !== undefined && defaultKimi26.input === 684_000, 'kimi-k2.6 CNY conversion from USD catalog (0.95 × 7.2)')
+
 // --- peak period's per-tier prices align by index with the base ranges ---
 const peakTierTable: PriceTable = {
   providers: { zai: { currency: 'CNY', currencySymbol: '¥' } },

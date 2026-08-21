@@ -138,7 +138,7 @@ node scripts/verify-card.mjs   # 渲染回归 sanity：headless 打开 GUI 校�
 
 ### 内置默认价格
 
-内置 wpsai 与 zai provider 的官方参考价格表（按每百万 token）。zai（BigModel GLM）按官方分段计费写入（GLM-5.1、GLM-5-Turbo、GLM-4.5-Air 两/三档；GLM-4.7 三档含输出长度分段）；缓存写入列当前为「限时免费」（0）。用户可在设置页覆盖/增删；未配置价格的模型显示「未登记价格」并按 0 计价。
+内置 14 家 provider 的官方参考价格表（按每百万 token、各家结算币种计价）：**wpsai / zai(BigModel GLM) / deepseek-official / moonshot(Kimi) / alibaba(通义 Qwen) / minimax / tencent(混元) / xiaomi(MiMo)** 按人民币，**openai(GPT-5.x) / anthropic(Claude) / google(Gemini) / xai(Grok) / mistral / upstage** 按美元。zai 按官方分段计费写入（GLM-5.1、GLM-5-Turbo、GLM-4.5-Air 两/三档；GLM-4.7 三档含输出长度分段），openai gpt-5.x / google gemini-3.1-pro / xai grok / alibaba qwen-plus 按官方长上下文分段（>272K / >200K / >256K 换档）写入；Anthropic 与 qwen 的缓存写入列按官方价填写，其余缓存写入为「限时免费」（0）。**默认不配置高峰窗口**（窗口按运行机本地时区判定，跨时区会误归属，请按自己时区在设置页配置）。用户可在设置页覆盖/增删；未配置价格的模型显示「未登记价格」并按 0 计价。价格核对日期 2026-08（openai/anthropic/google/xai/mistral/upstage 美元价与 moonshot/alibaba/minimax/tencent/xiaomi 人民币价同源于 dsh-cost-meter 官方价目；deepseek-official 按官方定价页空闲档 ×7 换算）。
 
 ### 目录结构
 

@@ -5,6 +5,15 @@
 
 ---
 
+### v0.3.19（未发布：内置默认价格表补齐主流供应商）
+
+- **内置默认价格表从 2 家扩到 14 家**：新增 `deepseek-official`（DeepSeek 官方空闲档 ×7 CNY）、`openai`（gpt-5.6-sol/terra/luna、gpt-5.5、gpt-5.4-mini/nano，USD）、`anthropic`（claude-sonnet-5 / opus-5 / sonnet-4-6 / haiku-4-5，USD）、`google`（gemini-3.7/3.6/3.5-flash、3.5-flash-lite、3.1-pro-preview，USD）、`xai`（grok-4.6/4.5/build-0.1，USD）、`mistral`（large-2512/medium-3.5/small-4.0，USD）、`upstage`（solar-pro4/pro3，USD）、`moonshot`（kimi-k3/k2.7-code/k2.6/k2.5，CNY）、`alibaba`（qwen3.8-max/3.7-max/3.7-plus/3.6-plus/3.5-plus，CNY）、`minimax`（m3/m2.7，CNY）、`tencent`（hunyuan-a13b/hy3，CNY）、`xiaomi`（mimo-v2.5/v2.5-pro，CNY）。价格核对日期 2026-08，同源于 dsh-cost-meter 官方价目（USD 价直用；CNY 价采用 wpsai 同源官方数字或按 ×7.2 换算，`cnyFromUsd` 统一处理）。
+- **官方长上下文分段写入**：openai gpt-5.x 按 >272K 输入换档（整单按档计）、google gemini-3.1-pro 与 xai grok 按 >200K、alibaba qwen3.7/3.6-plus 按 >256K；缓存写入列按官方价（Anthropic $6.25/$3.75/$1.25、openai gpt-5.6 系列、qwen）。
+- **默认不配高峰窗口**：窗口按运行机本地时区判定（已知限制），跨时区会误归属，默认表保持平峰价、由用户按自己时区配置 periods。
+- **工程**：`default-prices.ts` 新增 `usdPerMillion` 与内部 `cnyFromUsd` 辅助；文件头注释与 README「内置默认价格」同步更新；`tests/pure-check.ts` 新增默认表断言（新 provider 存在性、币种、tier 数量、CNY 换算自检）。
+
+---
+
 ### v0.3.18.1（修复：上下文占用条被裁掉不可见）
 
 - **上下文占用条回归修复（P0）**：卡片中的上下文进度条（`上下文占用 N% · 已用 / 窗口`）在 v0.3.16 的 K3 审查批次把压缩触发线包进 `<Tooltip>` 后**渲染但不可见**——Tooltip 的锚点 `<span>`（`display:inline-flex`、继承 16px 行高）是 `contextTrack` 的**文档流内**元素，把紧随其后的静态定位 `contextFill` 推到 4px 轨道下方 ~18px，被轨道的 `overflow:hidden` 整个裁掉。修复：`contextFill` 改为 `position:absolute; top:0; left:0`，作为 `contextTrack`（`position:relative`）的定位子元素，与触发线同层；此后任何文档流内兄弟元素都无法再把进度条挤出轨道。已在真实浏览器验证：修复前轨道 y=447 / 填充 y=465（18px 间隙、被裁），修复后两者同 y、填充可见。
