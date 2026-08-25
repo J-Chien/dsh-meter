@@ -1,7 +1,7 @@
 /**
  * Billing client plugin: contributes a persistent session-header action
- * (cost badge + hover card + refresh) and a native settings card (rc.7
- * `settings.plugin.item`, keyed by the `billing-pricing` namespace) for the
+ * (cost badge + hover card + refresh) and a native settings card (rc.2
+ * `settings.plugins.tab`, keyed by the `billing-pricing` namespace) for the
  * price table. The plugin is a module-table consumer only — it imports no
  * dsh client package values (platform modules + type-only imports only), so
  * its bundle passes the client purity gate as a third-party package.
@@ -55,11 +55,13 @@ export function apply(ctx: ClientContext): void {
     inject: actionInjected,
   }, BillingAction))
 
-  // Native settings card (rc.7): keyed by the settings namespace, rendered in
-  // the settings panel's plugins tab. Keyed slots take no id/order/label.
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: PRICING_NAMESPACE,
+  // Native settings card (rc.2): a tab inside the Plugins settings section,
+  // keyed by `id` (the settings namespace) with a localized `label`.
+  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+    name: 'settings.plugins.tab',
+    id: PRICING_NAMESPACE,
+    order: 20,
+    label: () => t('settings.title'),
     locale: NS,
     inject: (): BillingSettingsInjected => ({ t }),
   }, BillingSettingsCard))

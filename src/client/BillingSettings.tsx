@@ -41,6 +41,26 @@ export interface BillingSettingsInjected {
  *  props (no `close`, no `children`) — only what apply injects. */
 export type BillingSettingsCardProps = BillingSettingsInjected
 
+/**
+ * Key-order-insensitive JSON serialization used to confirm a write landed.
+ *
+ * The Host stores the user section RAW, but the snapshot the client receives
+ * rebuilds each object by walking it in SCHEMA declaration order (and omits
+ * absent keys). So the committed `user` never byte-matches the payload the
+ * editor built when their key order differs (e.g. the weekend off-peak fields
+ * sit after `periods` in the schema, before them in the editor object). A
+ * plain `JSON.stringify` equality then falsely reads a committed write as
+ * rejected. Sorting keys here makes the comparison order-insensitive, so only
+ * a genuinely different value (a rejected/reloaded write) mismatches.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record).sort()
+  return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalJson(record[k])}`).join(',')}}`
+}
+
 /** Per-provider editor state. */
 interface ProviderEdit {
   id: string
@@ -62,6 +82,10 @@ interface ModelEdit {
   tiers: PriceTier[]
   /** Whether tiered pricing is enabled (switch state); tiers persist only when on. */
   tierEnabled: boolean
+  /** Whether the weekend off-peak switch is on (requires `weekendOffPeakSince`). */
+  weekendOffPeak: boolean
+  /** Weekend off-peak effective date ("YYYY-MM-DD"); empty = not filled. */
+  weekendOffPeakSince: string
   /** Real model capability (context window / output cap), when resolved. */
   capability?: ModelCapability
 }
@@ -118,6 +142,8 @@ function buildEditor(catalog: ProviderCatalogRow[], table: PriceTable): Provider
           periods: (existing?.periods ?? []).map(clonePeriod),
           tiers: existingTiers.map(cloneTier),
           tierEnabled: existingTiers.length > 0,
+          weekendOffPeak: existing?.weekendOffPeak ?? false,
+          weekendOffPeakSince: existing?.weekendOffPeakSince ?? '',
           capability: catModel.capability,
         }
       }),
@@ -316,6 +342,7 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
               output: m.output,
               cacheInput: m.cacheInput,
               ...(m.cacheWrite !== 0 ? { cacheWrite: m.cacheWrite } : {}),
+              ...(m.weekendOffPeak && m.weekendOffPeakSince !== '' ? { weekendOffPeak: true, weekendOffPeakSince: m.weekendOffPeakSince } : {}),
               periods: m.periods.map(clonePeriod),
               ...(saveTiers.length > 0 ? { tiers: saveTiers } : {}),
             })
@@ -346,12 +373,18 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
       // update route, no save broadcast.
       await scope.set('providers', providers)
       await scope.set('models', models)
+      // Let the settings mirror fold the committed document into the snapshot
+      // (microtask-batched) before reading `user` — a stale snapshot here
+      // falsely reads as a rejected write.
+      await new Promise(resolve => setTimeout(resolve, 0))
       // A rejected write (host validation / revision conflict) silently
-      // re-reads instead of throwing — confirm via the raw user layer.
+      // re-reads instead of throwing — confirm via the raw user layer. Compare
+      // key-order-insensitively: the committed user is schema-ordered while
+      // the payload the editor built is insertion-ordered (see canonicalJson).
       const landed = scope.getSnapshot().user as Partial<PriceTable> | undefined
       if (landed === undefined
-        || JSON.stringify(landed.providers) !== JSON.stringify(providers)
-        || JSON.stringify(landed.models) !== JSON.stringify(models)) {
+        || canonicalJson(landed.providers) !== canonicalJson(providers)
+        || canonicalJson(landed.models) !== canonicalJson(models)) {
         throw new Error(t('settings.saveRejected'))
       }
       setDirty(false)
@@ -703,6 +736,9 @@ function ModelRow({ model, t, onChange }: {
       }
     })
   }
+  const toggleWeekendOffPeak = (): void => {
+    onChange(m => ({ ...m, weekendOffPeak: !m.weekendOffPeak }))
+  }
   const addTier = (): void => {
     onChange(m => {
       const next = [...m.tiers, seedTier(m.input, m.output, m.cacheInput, m.cacheWrite)]
@@ -810,6 +846,36 @@ function ModelRow({ model, t, onChange }: {
           </div>
         </div>
       ) : null}
+
+      {/* Weekend off-peak override: switch + required effective date. */}
+      <div className={css.weekendBlock}>
+        <label className={css.tierSwitch}>
+          <input
+            type="checkbox"
+            className={css.tierSwitchInput}
+            checked={model.weekendOffPeak}
+            onChange={toggleWeekendOffPeak}
+            aria-label={t('settings.weekend.label')}
+          />
+          <span className={css.tierSwitchTrack} aria-hidden="true">
+            <span className={css.tierSwitchThumb} />
+          </span>
+          <span className={css.tierSwitchLabel}>{t('settings.weekend.label')}</span>
+        </label>
+        {model.weekendOffPeak ? (
+          <label className={css.miniLabel}>{t('settings.weekend.since')}
+            <input
+              type="date"
+              className={`${css.input} ${css.weekendDate}`}
+              value={model.weekendOffPeakSince}
+              onChange={e => onChange(m => ({ ...m, weekendOffPeakSince: e.target.value }))}
+            />
+          </label>
+        ) : null}
+        {model.weekendOffPeak && model.weekendOffPeakSince === '' ? (
+          <span className={css.weekendHint}>{t('settings.weekend.required')}</span>
+        ) : null}
+      </div>
 
       <div className={css.peakBlock}>
         <div className={css.peakHead}>

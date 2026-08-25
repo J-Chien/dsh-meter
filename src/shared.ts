@@ -82,6 +82,12 @@ export interface ModelPrice {
   periods?: PeakPeriod[]
   /** Optional length-based price tiers; absent = no tiering. */
   tiers?: PriceTier[]
+  /** Weekend off-peak switch: when on, weekends (Beijing time) on/after
+   *  `weekendOffPeakSince` bill off-peak regardless of any peak windows. */
+  weekendOffPeak?: boolean
+  /** Weekend off-peak effective date ("YYYY-MM-DD", Beijing). Required when
+   *  `weekendOffPeak` is on; absent/empty disables the override. */
+  weekendOffPeakSince?: string
 }
 
 /** Per-provider currency selection. */
@@ -126,6 +132,33 @@ export function inPeakWindow(period: PeakPeriod, timeMs: number): boolean {
   // window's start day (see the doc comment above).
   if (period.days !== undefined && period.days.length > 0 && !period.days.includes(windowDay)) return false
   return true
+}
+
+/** Parse a "YYYY-MM-DD" date (Beijing midnight) into epoch ms, or NaN. */
+function beijingMidnightMs(isoDate: string): number {
+  return Date.parse(isoDate + 'T00:00:00+08:00')
+}
+
+/** Whether an epoch-ms instant is a Saturday or Sunday in Beijing time (UTC+8). */
+function isBeijingWeekend(timeMs: number): boolean {
+  return [0, 6].includes(new Date(timeMs + 8 * 3600_000).getUTCDay())
+}
+
+/**
+ * Whether the weekend off-peak override applies at `timeMs`: the model's
+ * `weekendOffPeak` switch is on, `weekendOffPeakSince` is a valid non-empty
+ * date, `timeMs` is on/after that date, and it is a Beijing weekend. Shared by
+ * the host fold and the client peak tag so the two never drift apart.
+ */
+export function isWeekendOffPeak(
+  timeMs: number,
+  enabled: boolean | undefined,
+  since: string | undefined,
+): boolean {
+  if (enabled !== true || since === undefined || since === '') return false
+  const sinceMs = beijingMidnightMs(since)
+  if (Number.isNaN(sinceMs) || timeMs < sinceMs) return false
+  return isBeijingWeekend(timeMs)
 }
 
 /**

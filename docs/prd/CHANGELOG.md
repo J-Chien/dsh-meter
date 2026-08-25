@@ -5,6 +5,14 @@
 
 ---
 
+### v0.3.19（周末谷时覆盖 + 设置保存确认误报修复）
+
+- **周末谷时（P0，DeepSeek 官方「2026-08-23 起周末不再区分峰谷、统一谷价」）**：`ModelPrice` 新增 `weekendOffPeak`（开关）与 `weekendOffPeakSince`（生效日，`YYYY-MM-DD`）两字段——开启且填了生效日时，北京时间周六/周日且时间 ≥ 生效日（含当天）一律按空闲/默认价计，屏蔽任何高峰窗口；开关关/日期为空则不生效。host 折叠（`src/host/price.ts` 的 `effectivePrice`）与 client 高峰标签（`src/client/BillingAction.tsx` 的 `inPeakNow`）共用 `src/shared.ts` 新增的 `isWeekendOffPeak` 纯函数，两侧不漂移。设置卡片（`BillingSettings.tsx`）为每个模型加开关 + 生效日期输入（未填日期显示提示未填不生效）；内置默认表为 deepseek-v4-pro / deepseek-v4-flash / deepseek-v4-flash-0731 预置 `weekendOffPeak:true, weekendOffPeakSince:'2026-08-23'`（可在设置页覆盖/关闭）。schemastery schema（`host/index.ts`）同步两字段；测试补 `isWeekendOffPeak` 纯函数断言与 folding 场景（周六生效日后谷价、周一仍高峰、生效日前的周六仍高峰）。
+- **设置保存确认误报修复（P1）**：`BillingSettings.tsx` 的 `save()` 用 `JSON.stringify` 全等比对 `scope.getSnapshot().user` 与编辑器自拼 payload——宿主存储 `user` 为原始层，但快照回读时经 `redactSecrets` 按 **schema 声明顺序**重建对象（并省略缺省字段），而编辑器对象按插入顺序构造（周末字段在 `periods` 前，schema 在 `periods` 后），键序错开导致**周末开关一开就误报「写入被宿主拒绝（校验失败或版本冲突）」**（周末全关则键序一致、正常）。修复：新增 `canonicalJson`（键序无关的递归序列化）比对两个字段层——只有写真正未落盘（校验/版本冲突被拒）时才会不匹配。移除临时 `console.error` 诊断；`scope.set` 后保留一个宏任务让快照折叠提交后再读 `user`。
+- **工程**：`package.json` 版本号 0.3.18.1 → 0.3.19；`docs/prd/PRD.md` 数据模型与关键口径、`README.md` 特性/计价核心同步记录周末谷时。
+
+---
+
 ### v0.3.18.1（修复：上下文占用条被裁掉不可见）
 
 - **上下文占用条回归修复（P0）**：卡片中的上下文进度条（`上下文占用 N% · 已用 / 窗口`）在 v0.3.16 的 K3 审查批次把压缩触发线包进 `<Tooltip>` 后**渲染但不可见**——Tooltip 的锚点 `<span>`（`display:inline-flex`、继承 16px 行高）是 `contextTrack` 的**文档流内**元素，把紧随其后的静态定位 `contextFill` 推到 4px 轨道下方 ~18px，被轨道的 `overflow:hidden` 整个裁掉。修复：`contextFill` 改为 `position:absolute; top:0; left:0`，作为 `contextTrack`（`position:relative`）的定位子元素，与触发线同层；此后任何文档流内兄弟元素都无法再把进度条挤出轨道。已在真实浏览器验证：修复前轨道 y=447 / 填充 y=465（18px 间隙、被裁），修复后两者同 y、填充可见。

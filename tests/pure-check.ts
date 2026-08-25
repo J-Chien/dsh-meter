@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
-import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow } from '../src/shared.ts'
+import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow, isWeekendOffPeak } from '../src/shared.ts'
 import type { PriceTable, TurnCost } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
 import { billingFence } from '../src/host/fence.ts'
@@ -30,6 +30,15 @@ assert.equal(inPeakWindow(peak, at('2026-08-17T23:00:00+08:00')), true, '23:00 i
 assert.equal(inPeakWindow(peak, at('2026-08-17T05:00:00+08:00')), true, '05:00 in overnight window')
 assert.equal(inPeakWindow(peak, at('2026-08-17T12:00:00+08:00')), false, '12:00 outside')
 assert.equal(inPeakWindow(peak, at('2026-08-17T06:00:00+08:00')), false, '06:00 boundary excluded')
+
+// --- isWeekendOffPeak: weekend off-peak override (Beijing time) ---
+assert.equal(isWeekendOffPeak(at('2026-08-29T12:00:00+08:00'), true, '2026-08-23'), true, 'Saturday after effective date → weekend off-peak')
+assert.equal(isWeekendOffPeak(at('2026-08-23T12:00:00+08:00'), true, '2026-08-23'), true, 'Sunday on effective date → weekend off-peak')
+assert.equal(isWeekendOffPeak(at('2026-08-24T12:00:00+08:00'), true, '2026-08-23'), false, 'Monday → not weekend')
+assert.equal(isWeekendOffPeak(at('2026-08-22T12:00:00+08:00'), true, '2026-08-23'), false, 'Saturday before effective date → original rule')
+assert.equal(isWeekendOffPeak(at('2026-08-29T12:00:00+08:00'), false, '2026-08-23'), false, 'switch off → not enabled')
+assert.equal(isWeekendOffPeak(at('2026-08-29T12:00:00+08:00'), true, ''), false, 'empty date → not enabled')
+assert.equal(isWeekendOffPeak(at('2026-08-29T12:00:00+08:00'), true, 'not-a-date'), false, 'invalid date → not enabled')
 
 // --- fold over a realistic log with a peak period ---
 const table: PriceTable = {
@@ -75,6 +84,46 @@ assert.equal(stats.cost['CNY'], priceTokens(100, cnyPerMillion(1)) + priceTokens
   + priceTokens(80, cnyPerMillion(1.5)) + priceTokens(20, cnyPerMillion(0.03)) + priceTokens(30, cnyPerMillion(3)))
 assert.equal(stats.byPeriod['CNY']!.offPeak, priceTokens(100, cnyPerMillion(1)) + priceTokens(50, cnyPerMillion(2)))
 assert.equal(stats.byPeriod['CNY']!.peak, priceTokens(80, cnyPerMillion(1.5)) + priceTokens(20, cnyPerMillion(0.03)) + priceTokens(30, cnyPerMillion(3)))
+
+// --- weekend off-peak override: weekends on/after the effective date bill
+//     off-peak; weekdays and pre-date weekends keep the peak window ---
+const weekendTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'wpsai', model: 'wk-model',
+    input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: 0,
+    weekendOffPeak: true, weekendOffPeakSince: '2026-08-23',
+    periods: [{ startHour: 0, endHour: 24, input: cnyPerMillion(2), output: cnyPerMillion(4), cacheInput: 0 }],
+  }],
+}
+const weekendHdr = (time: number): SessionEvent<'request/header'> => ({
+  type: 'request/header', seq: 0, time,
+  data: { header: { config: { provider: 'wpsai', model: 'wk-model' } }, reason: 'initial' },
+})
+const weekendMsg = (seq: number, time: number): SessionEvent<'assistant/message'> => ({
+  type: 'assistant/message', seq, time,
+  data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'wk-model'), usage: { inputTokens: 100, outputTokens: 50 } },
+  surfaceOp: 'append',
+})
+// Saturday after the effective date → off-peak (1/M input, 2/M output).
+const wkSat = foldBilling([
+  weekendHdr(at('2026-08-29T12:00:00+08:00')),
+  weekendMsg(1, at('2026-08-29T12:00:05+08:00')),
+], weekendTable)
+assert.equal(wkSat.byPeriod['CNY']!.offPeak, priceTokens(100, cnyPerMillion(1)) + priceTokens(50, cnyPerMillion(2)), 'weekend after effective date bills off-peak')
+assert.equal(wkSat.byPeriod['CNY']!.peak, 0, 'weekend after effective date has no peak cost')
+// Monday after the effective date → peak (2/M input, 4/M output).
+const wkMon = foldBilling([
+  weekendHdr(at('2026-08-24T12:00:00+08:00')),
+  weekendMsg(1, at('2026-08-24T12:00:05+08:00')),
+], weekendTable)
+assert.equal(wkMon.byPeriod['CNY']!.peak, priceTokens(100, cnyPerMillion(2)) + priceTokens(50, cnyPerMillion(4)), 'weekday after effective date bills peak')
+// Saturday BEFORE the effective date → still peak (original rule).
+const wkPre = foldBilling([
+  weekendHdr(at('2026-08-22T12:00:00+08:00')),
+  weekendMsg(1, at('2026-08-22T12:00:05+08:00')),
+], weekendTable)
+assert.equal(wkPre.byPeriod['CNY']!.peak, priceTokens(100, cnyPerMillion(2)) + priceTokens(50, cnyPerMillion(4)), 'pre-date weekend keeps peak')
 assert.ok(Math.abs(stats.cacheHitRate - 20/200) < 1e-9)
 
 // --- per-turn fold: turns[] + lastRequestInputTokens ---
