@@ -20,17 +20,17 @@ export function cnyPerMillion(value: number): number {
 /** The built-in default model prices (CNY). */
 export const DEFAULT_PRICES: ModelPrice[] = [
   { provider: 'wpsai', model: 'moonshot/kimi-k2.5', input: cnyPerMillion(4), output: cnyPerMillion(21), cacheInput: cnyPerMillion(0.7), cacheWrite: 0 },
-  { provider: 'wpsai', model: 'deepseek/deepseek-v4-pro', input: cnyPerMillion(3), output: cnyPerMillion(6), cacheInput: cnyPerMillion(0.025), cacheWrite: 0 },
+  { provider: 'wpsai', model: 'deepseek/deepseek-v4-pro', input: cnyPerMillion(3), output: cnyPerMillion(6), cacheInput: cnyPerMillion(0.025), cacheWrite: 0, weekendOffPeak: true, weekendOffPeakSince: '2026-08-23' },
   { provider: 'wpsai', model: 'xiaomi/mimo-v2.5-pro', input: cnyPerMillion(3), output: cnyPerMillion(6), cacheInput: cnyPerMillion(0.025), cacheWrite: 0 },
   { provider: 'wpsai', model: 'ali/qwen3.7-max', input: cnyPerMillion(12), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2.4), cacheWrite: 0 },
-  { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02), cacheWrite: 0 },
+  { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02), cacheWrite: 0, weekendOffPeak: true, weekendOffPeakSince: '2026-08-23' },
   { provider: 'wpsai', model: 'zhipu/glm-5', input: cnyPerMillion(4), output: cnyPerMillion(18), cacheInput: cnyPerMillion(1), cacheWrite: 0 },
   { provider: 'wpsai', model: 'zhipu/glm-5.2', input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0 },
   { provider: 'wpsai', model: 'doubao/Doubao-Seed-Evolving', input: cnyPerMillion(6), output: cnyPerMillion(30), cacheInput: cnyPerMillion(1.2), cacheWrite: 0 },
   { provider: 'wpsai', model: 'moonshot/kimi-k2.7-code', input: cnyPerMillion(6.5), output: cnyPerMillion(27), cacheInput: cnyPerMillion(1.3), cacheWrite: 0 },
   { provider: 'wpsai', model: 'google/gemini-3.5-flash', input: cnyPerMillion(10.155), output: cnyPerMillion(60.93), cacheInput: cnyPerMillion(1.016), cacheWrite: 0 },
   { provider: 'wpsai', model: 'moonshot/kimi-k3', input: cnyPerMillion(20), output: cnyPerMillion(100), cacheInput: cnyPerMillion(2), cacheWrite: 0 },
-  { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash-0731', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02), cacheWrite: 0 },
+  { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash-0731', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02), cacheWrite: 0, weekendOffPeak: true, weekendOffPeakSince: '2026-08-23' },
 
   // zai / BigModel GLM tiered billing (CNY per M; bounds in raw tokens).
   // GLM-5.1: 输入 [0,32K) 6/24/1.3 · 输入 [32K+) 8/28/2.

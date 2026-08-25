@@ -7,7 +7,7 @@
  * `PRICE_PRECISION`ths of the configured currency unit (default 1/100000 of
  * a yuan, i.e. 0.00001). This keeps 4-decimal prices like ¥10.1550/M exact.
  */
-import { findPriceRow, inPeakWindow, PRICE_PRECISION, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
+import { findPriceRow, inPeakWindow, isWeekendOffPeak, PRICE_PRECISION, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
 
 export { findPriceRow, inPeakWindow, PRICE_PRECISION, formatPrice, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
 
@@ -98,7 +98,9 @@ export function effectivePrice(
   if (row === undefined) {
     return { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', found: false }
   }
-  const period = activePeriod(row, timeMs)
+  const period = isWeekendOffPeak(timeMs, row.weekendOffPeak, row.weekendOffPeakSince)
+    ? undefined
+    : activePeriod(row, timeMs)
   if (period !== undefined) {
     // Period tiers align by index with the base tier RANGES.
     if (period.tiers !== undefined && period.tiers.length > 0) {

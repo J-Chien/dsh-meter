@@ -211,6 +211,8 @@ interface ModelPrice {
   input: number; output: number; cacheInput: number; cacheWrite?: number  // 空闲（默认）四价，兼兜底
   periods?: PeakPeriod[]   // 多个高峰窗口
   tiers?: PriceTier[]      // 分段列表；tiers[0] 为默认段（区间可空 = 全部），与顶层默认价一致
+  weekendOffPeak?: boolean     // 周末谷时开关：开启后生效日（含，北京时间）起的周六/周日一律按空闲价计，无视高峰窗口
+  weekendOffPeakSince?: string // 周末谷时生效日（"YYYY-MM-DD"，北京时区）；开关开且此值非空才生效
 }
 interface PeakPeriod {
   startHour: number; endHour: number   // 本地小时 0–23 / 1–24，end < start = 跨天窗口
@@ -265,6 +267,7 @@ interface TurnSummary extends TurnCost { requests: number }
 - **快照差分**：每轮新增 = 该轮最后一个请求总输入 − 上一轮最后一个请求总输入，免疫缓存失效（`turnSnapshots`/`turnGrowths`）；第 1 轮的新增 = 其整轮快照（`turnGrowthByTurn`）。
 - **压缩预估**：`estimateCompactionGrowth`（已完成轮、双窗口 trimmed mean 取小）+ `estimateCompactionEta`（headroom ÷ 增速）。
 - **token 四桶互斥相加**：未命中输入/命中/写入/输出相加 = 总用量（与主仓库 token-meter `usageTokens` 同口径）。
+- **周末谷时覆盖**（`isWeekendOffPeak`，`src/shared.ts`）：模型 `weekendOffPeak===true` 且 `weekendOffPeakSince` 为合法非空日期时，北京时间周六/周日且时间 ≥ 生效日（含当天）→ 一律按空闲/默认价计，忽略任何高峰窗口；否则回落原高峰/空闲判定。host 折叠与 client 高峰标签共用此函数，两侧不会漂移。
 - **常量**：`PRICE_PRECISION=100000`、`RECENT_TURNS_CAP=50`、`CONTEXT_WARN_THRESHOLD=0.85`、`COMPACT_TRIGGER_RATIO=0.8`。
 
 **数据模型变更的联动点**（改一处必须同步其余）：

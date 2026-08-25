@@ -62,6 +62,8 @@ const modelPriceSchema = z.object({
   cacheWrite: z.number().min(0),
   periods: z.array(periodSchema).default([]),
   tiers: z.array(tierSchema).default([]),
+  weekendOffPeak: z.boolean().default(false),
+  weekendOffPeakSince: z.string().default(''),
 })
 
 const providerCurrencySchema = z.object({

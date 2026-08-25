@@ -12,7 +12,7 @@ import {
   IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, findPriceRow, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
+import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, findPriceRow, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, isWeekendOffPeak, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { formatPrice, formatTime, formatTokens } from './format.ts'
 import { refreshSessionStats } from './billing-api.ts'
 import { usePricingTable } from './pricing-scope.ts'
@@ -58,6 +58,7 @@ function inPeakNow(peakModels: readonly string[], table: PriceTable | undefined,
     const effort = slash2 > 0 ? rest.slice(slash2 + 1) : undefined
     const row = findPriceRow(table, provider, model, effort)
     if (row?.periods === undefined) continue
+    if (isWeekendOffPeak(timeMs, row.weekendOffPeak, row.weekendOffPeakSince)) continue
     if (row.periods.some(p => inPeakWindow(p, timeMs))) return true
   }
   return false
