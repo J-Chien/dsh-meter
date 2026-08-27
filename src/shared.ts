@@ -84,10 +84,29 @@ export interface ModelPrice {
   tiers?: PriceTier[]
 }
 
+/** IANA timezone a provider's peak windows are judged in when it sets none.
+ *  DeepSeek bills by Beijing time, so the default follows that habit. */
+export const DEFAULT_TIMEZONE = 'Asia/Shanghai'
+
+/** Day-of-week mask for weekdays (0=Sunday … 6=Saturday): Mon–Fri. */
+export const WEEKDAY_DAYS = [1, 2, 3, 4, 5]
+
+/** Provider id of DeepSeek's official API (target of the official-rule
+ *  preset button in the settings card). */
+export const DEEPSEEK_OFFICIAL_PROVIDER = 'deepseek-official'
+
 /** Per-provider currency selection. */
 export interface ProviderCurrency {
   currency: 'CNY' | 'USD'
   currencySymbol: string
+  /**
+   * IANA timezone name (e.g. "Asia/Shanghai") for judging this provider's
+   * peak windows. Absent = DEFAULT_TIMEZONE. One provider may span regions
+   * and another may bill in a different timezone, so each provider carries
+   * its own clock — a request priced at peak in one provider's window is
+   * off-peak in another's without either being "wrong".
+   */
+  timezone?: string
 }
 
 /** The resolved price configuration (what the settings page edits). */
@@ -97,18 +116,70 @@ export interface PriceTable {
   models: ModelPrice[]
 }
 
+/**
+ * The wall-clock hour (0-23) and weekday (0=Sunday … 6=Saturday) of an
+ * instant in a timezone, via cached `Intl.DateTimeFormat` parts.
+ *
+ * Cached per timezone: window checks run on every priced request, so the
+ * formatter must not be reconstructed each call.
+ */
+const tzFormatters = new Map<string, Intl.DateTimeFormat>()
+const tzCache = new Map<string, { hour: number; day: number; minute: number }>()
+function wallClock(timeMs: number, timezone: string): { hour: number; day: number } {
+  let formatter = tzFormatters.get(timezone)
+  if (formatter === undefined) {
+    // A corrupted table could carry an unparseable timezone; degrade to the
+    // default rather than throwing out of the whole fold.
+    try {
+      formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone, weekday: 'short', hour: '2-digit', hourCycle: 'h23',
+      })
+    } catch {
+      return wallClock(timeMs, DEFAULT_TIMEZONE)
+    }
+    tzFormatters.set(timezone, formatter)
+  }
+  let cached = tzCache.get(timezone)
+  if (cached === undefined) {
+    cached = { hour: -1, day: -1, minute: -1 }
+    tzCache.set(timezone, cached)
+  }
+  // The cache keys by the wall-clock minute: an instant that re-reads the
+  // same minute (same hour + same weekday) reuses the parsed parts.
+  const minute = Math.floor(timeMs / 60_000)
+  if (cached.hour === -1 || cached.minute !== minute) {
+    const parts = formatter.formatToParts(timeMs)
+    let hour = 0
+    let day = 0
+    for (const part of parts) {
+      if (part.type === 'hour') hour = Number(part.value) % 24
+      else if (part.type === 'weekday') day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(part.value)
+    }
+    cached.hour = hour
+    cached.day = day
+    cached.minute = minute
+  }
+  return { hour: cached.hour, day: cached.day }
+}
+
 /** Whether a wall-clock instant falls inside a peak window. Shared by the
  *  host fold and the client "currently in peak" hint so window semantics
  *  stay single-source.
+ *
+ *  `timezone` (a provider-level clock, typically the provider's own
+ *  `timezone` setting) decides the hour AND the weekday: DeepSeek bills in
+ *  Beijing time, so a window configured for Asia/Shanghai must open at
+ *  09:00 in Shanghai, not at 09:00 wherever the host runs. Absent/empty
+ *  falls back to DEFAULT_TIMEZONE (Asia/Shanghai) — the DeepSeek habit and
+ *  the historical default for existing configs.
  *
  *  `days` filters by the window's START day: an overnight window (22:00→06:00)
  *  with days=[5] (Friday) covers Friday 22:00 through Saturday 06:00 — the
  *  early-morning half belongs to the window that opened the previous day.
  *  startHour === endHour reads as "all day". */
-export function inPeakWindow(period: PeakPeriod, timeMs: number): boolean {
-  const date = new Date(timeMs)
-  const day = date.getDay()
-  const hour = date.getHours()
+export function inPeakWindow(period: PeakPeriod, timeMs: number, timezone?: string): boolean {
+  const tz = timezone !== undefined && timezone.trim() !== '' ? timezone : DEFAULT_TIMEZONE
+  const { hour, day } = wallClock(timeMs, tz)
   let inside: boolean
   let windowDay = day
   if (period.startHour < period.endHour) {

@@ -23,11 +23,12 @@ export interface EffectivePrice {
   found: boolean
 }
 
-/** Whether any configured peak period is active at `timeMs`. */
-function activePeriod(row: ModelPrice, timeMs: number): PeakPeriod | undefined {
+/** Whether any configured peak period is active at `timeMs`, judged in the
+ *  provider's timezone (absent → DEFAULT_TIMEZONE via inPeakWindow). */
+function activePeriod(row: ModelPrice, timeMs: number, timezone?: string): PeakPeriod | undefined {
   if (row.periods === undefined) return undefined
   for (const period of row.periods) {
-    if (inPeakWindow(period, timeMs)) return period
+    if (inPeakWindow(period, timeMs, timezone)) return period
   }
   return undefined
 }
@@ -98,7 +99,8 @@ export function effectivePrice(
   if (row === undefined) {
     return { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', found: false }
   }
-  const period = activePeriod(row, timeMs)
+  const timezone = table.providers[provider]?.timezone
+  const period = activePeriod(row, timeMs, timezone)
   if (period !== undefined) {
     // Period tiers align by index with the base tier RANGES.
     if (period.tiers !== undefined && period.tiers.length > 0) {

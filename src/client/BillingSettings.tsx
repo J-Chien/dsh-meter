@@ -28,6 +28,7 @@ import { pricingScope, usePricingSnapshot } from './pricing-scope.ts'
 import { consumeLocateModel, LOCATE_EVENT, type LocateModelRequest } from './locate.ts'
 import { BillingLabel } from './BillingLabel.tsx'
 import { type BillingKey } from './locales.ts'
+import { DEFAULT_TIMEZONE, DEEPSEEK_OFFICIAL_PROVIDER, WEEKDAY_DAYS } from '../shared.ts'
 import './theme.module.css'
 import css from './BillingSettings.module.css'
 
@@ -47,6 +48,8 @@ interface ProviderEdit {
   name: string
   currency: 'CNY' | 'USD'
   currencySymbol: string
+  /** IANA timezone for this provider's peak windows; undefined = Asia/Shanghai. */
+  timezone?: string
   models: ModelEdit[]
 }
 
@@ -105,6 +108,7 @@ function buildEditor(catalog: ProviderCatalogRow[], table: PriceTable): Provider
       name: provider.name,
       currency: providerCurrency.currency,
       currencySymbol: providerCurrency.currencySymbol,
+      timezone: providerCurrency.timezone,
       models: provider.models.map(catModel => {
         const existing = byKey.get(`${provider.id}/${catModel.id}`)
         const existingTiers = existing?.tiers ?? []
@@ -268,6 +272,46 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
     })
   }, [])
 
+  /**
+   * Apply the official DeepSeek peak rules to the provider's models: each
+   * model gains/updates a weekday-only peak window (the provider's timezone
+   * also snaps to Asia/Shanghai). Prices are left untouched — the window is
+   * only "which days count as peak", so existing prices carry over. Idempotent:
+   * re-applying replaces any weekday period rather than stacking another.
+   */
+  const applyOfficialPreset = useCallback((providerId: string): void => {
+    if (editor?.status !== 'ready') return
+    const weekdays = [...WEEKDAY_DAYS]
+    patchProvider(providerId, p => ({
+      ...p,
+      timezone: DEFAULT_TIMEZONE,
+      models: p.models.map(m => {
+        const periods = m.periods.map(clonePeriod)
+        // Replace any existing weekday (Mon–Fri) period with the official one;
+        // keep non-weekday periods (a weekend/all-day window still applies).
+        const rest = periods.filter(period => {
+          if (period.days === undefined || period.days.length === 0) return true
+          return !period.days.every(d => weekdays.includes(d))
+        })
+        const existing = periods.find(period =>
+          period.days !== undefined && period.days.length > 0 && period.days.every(d => weekdays.includes(d)))
+        const window: PeakPeriod = existing !== undefined
+          ? { ...clonePeriod(existing), days: weekdays }
+          : {
+              startHour: 22,
+              endHour: 6,
+              days: weekdays,
+              input: m.input,
+              output: m.output,
+              cacheInput: m.cacheInput,
+              cacheWrite: m.cacheWrite,
+              tiers: m.tiers.map(tier => seedTier(m.input, m.output, m.cacheInput, m.cacheWrite)),
+            }
+        return { ...m, periods: [...rest, window] }
+      }),
+    }))
+  }, [editor, patchProvider])
+
   /** Discard drafts: rebuild the editor from the last accepted table. */
   const discard = (): void => {
     const table = snapshot.value
@@ -289,7 +333,14 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
       // effort-less). The editor OWNS these rows: clearing one unregisters it.
       const editorKeys = new Set<string>()
       for (const provider of editor.providers) {
-        providers[provider.id] = { currency: provider.currency, currencySymbol: provider.currencySymbol }
+        providers[provider.id] = {
+          currency: provider.currency,
+          currencySymbol: provider.currencySymbol,
+          // Persist a non-empty timezone; empty = engine default (Asia/Shanghai).
+          ...(provider.timezone !== undefined && provider.timezone.trim() !== ''
+            ? { timezone: provider.timezone.trim() }
+            : {}),
+        }
         for (const m of provider.models) {
           editorKeys.add(`${m.provider}/${m.model}`)
           // Register a model only when it carries a price, a peak window, or a
@@ -417,6 +468,8 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
                       currencySymbol: currency === 'CNY' ? '¥' : '$',
                     }))
                   }}
+                  onTimezone={(timezone) => patchProvider(provider.id, p => ({ ...p, timezone }))}
+                  onPreset={() => applyOfficialPreset(provider.id)}
                   onModel={(modelKey, fn) => {
                     patchProvider(provider.id, p => ({
                       ...p,
@@ -445,12 +498,14 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
 }
 
 /** One collapsible provider group with its models. */
-function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onModel }: {
+function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onTimezone, onPreset, onModel }: {
   provider: ProviderEdit
   collapsed: boolean
   t: (key: BillingKey) => string
   onToggle: () => void
   onCurrency: (currency: 'CNY' | 'USD') => void
+  onTimezone: (timezone: string | undefined) => void
+  onPreset: () => void
   onModel: (model: string, fn: (m: ModelEdit) => ModelEdit) => void
 }) {
   return (
@@ -462,6 +517,16 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onModel }
           <IconChevronDownOutline14 className={collapsed ? css.chevron : `${css.chevron} ${css.chevronOpen}`} />
         </button>
         <div className={css.providerMeta}>
+          <div className={css.providerTzRow}>
+            <TimezoneEditor value={provider.timezone} t={t}
+              onChange={onTimezone} />
+            {provider.id === DEEPSEEK_OFFICIAL_PROVIDER ? (
+              <button type="button" className={css.presetBtn} onClick={onPreset}
+                title={t('settings.preset.desc')}>
+                {t('settings.preset.apply')}
+              </button>
+            ) : null}
+          </div>
           <label className={css.currencySelect}>
             <span className={css.miniLabel}>{t('settings.currency.label')}</span>
             <select
@@ -488,6 +553,76 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onModel }
             ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/** IANA timezone editor: a text field with a draft commit-on-blur, plus a
+ *  quick "machine local" reset. Validates the name against Intl on commit;
+ *  invalid input is rejected loudly (field keeps the draft, error shown). */
+function TimezoneEditor({ value, t, onChange }: {
+  value: string | undefined
+  t: (key: BillingKey) => string
+  onChange: (timezone: string | undefined) => void
+}) {
+  const [draft, setDraft] = useState(value ?? '')
+  const [error, setError] = useState<string | undefined>(undefined)
+  const [focused, setFocused] = useState(false)
+  const latest = useRef({ draft, value, onChange })
+  latest.current = { draft, value, onChange }
+
+  useEffect(() => {
+    if (!focused) setDraft(value ?? '')
+  }, [value, focused])
+
+  // Commit the pending draft on unmount (collapse with the field focused).
+  useEffect(() => () => {
+    const { draft: d, value: v, onChange: oc } = latest.current
+    const trimmed = d.trim()
+    if (trimmed === '' || trimmed === v) return
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: trimmed })
+      oc(trimmed)
+    } catch {
+      // invalid: drop silently on unmount (no UI to show the error on)
+    }
+  }, [])
+
+  const commit = (): void => {
+    const trimmed = draft.trim()
+    if (trimmed === '') {
+      setError(undefined)
+      setDraft('')
+      if (value !== undefined) onChange(undefined)
+      return
+    }
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: trimmed })
+      setError(undefined)
+      if (trimmed !== value) onChange(trimmed)
+    } catch {
+      setError(t('settings.timezone.invalid'))
+    }
+  }
+
+  return (
+    <div className={css.tzField}>
+      <label className={css.miniLabel}>
+        <span>{t('settings.timezone.label')}</span>
+        <input
+          className={css.tzInput}
+          type="text"
+          placeholder={DEFAULT_TIMEZONE}
+          aria-label={t('settings.timezone.label')}
+          title={t('settings.timezone.hint')}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => { setFocused(false); commit() }}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }}
+        />
+      </label>
+      {error !== undefined ? <span className={css.tzError} role="status">{error}</span> : null}
     </div>
   )
 }
@@ -842,6 +977,20 @@ function PeriodEditor({ period, modelTiers, t, onChange, onRemove }: {
   const setTier = (i: number, fn: (t: PriceTier) => PriceTier): void => {
     onChange(p => ({ ...p, tiers: (p.tiers ?? []).map((tier, j) => (j === i ? fn(cloneTier(tier)) : tier)) }))
   }
+  // Weekday mask editing: undefined/empty = every day. Quick chips set whole
+  // presets; the day checkboxes toggle individual weekdays (0=Sun … 6=Sat).
+  const days = period.days ?? []
+  const setDays = (next: number[] | undefined): void => {
+    onChange(p => ({ ...p, ...(next === undefined || next.length === 0 ? {} : { days: [...next] }) }))
+  }
+  const allDays = Array.from({ length: 7 }, (_, i) => i)
+  const isEvery = days.length === 0 || days.length === 7
+  const isWeekday = days.length > 0 && days.length === WEEKDAY_DAYS.length && WEEKDAY_DAYS.every(d => days.includes(d))
+  const isWeekend = days.length === 2 && days.includes(0) && days.includes(6)
+  const toggleDay = (day: number): void => {
+    const next = days.includes(day) ? days.filter(d => d !== day) : [...days, day].sort((a, b) => a - b)
+    setDays(next)
+  }
   // 区间 1 edits period.tiers[0] (the default tier) and mirrors the period's
   // flat prices so host pricing (which reads period.tiers by index) matches
   // what the user sees.
@@ -871,6 +1020,27 @@ function PeriodEditor({ period, modelTiers, t, onChange, onRemove }: {
             onChange={v => onChange(p => ({ ...p, endHour: v }))} ariaLabel={t('settings.peak.end')} />
         </label>
         <button type="button" className={css.removePeriod} onClick={onRemove} aria-label={t('settings.peak.remove')}>×</button>
+      </div>
+
+      <div className={css.daysRow}>
+        <span className={css.peakLabel}>{t('settings.peak.days')}</span>
+        <div className={css.daysQuick}>
+          <button type="button" className={`${css.daysChip}${isEvery ? ` ${css.daysChipActive}` : ''}`}
+            onClick={() => setDays(undefined)}>{t('settings.peak.days.every')}</button>
+          <button type="button" className={`${css.daysChip}${isWeekday ? ` ${css.daysChipActive}` : ''}`}
+            onClick={() => setDays([...WEEKDAY_DAYS])}>{t('settings.peak.days.weekday')}</button>
+          <button type="button" className={`${css.daysChip}${isWeekend ? ` ${css.daysChipActive}` : ''}`}
+            onClick={() => setDays([0, 6])}>{t('settings.peak.days.weekend')}</button>
+        </div>
+        <div className={css.daysChecks}>
+          {allDays.map(day => (
+            <label key={day} className={css.dayCheck}>
+              <input type="checkbox" checked={days.includes(day)} onChange={() => toggleDay(day)} />
+              {t(`settings.peak.days.${['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][day]! as 'sun'}`)}
+            </label>
+          ))}
+        </div>
+        <span className={css.daysHint}>{t('settings.peak.days.hint')}</span>
       </div>
 
       {modelTiers.length > 0 ? (

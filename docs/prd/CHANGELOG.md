@@ -5,6 +5,19 @@
 
 ---
 
+### v0.3.19（高峰时段：工作日/周末 + 时区判定 + DeepSeek 官方预设）
+
+对应 DeepSeek 2026-08-23 峰谷计费新规——工作日保留峰谷、周末全天低谷价。
+
+- **高峰窗口支持生效星期（`days` 编辑 UI）**：每个高峰窗口新增「生效星期」一行——快捷 chip「每天 / 工作日(周一至五) / 周末(周六日)」+ 逐日勾选（日一二三四五六）；`days` 按**窗口起始日**判定（周五 22:00–06:00 覆盖周六凌晨）。引擎早已支持 `days` 掩码（`inPeakWindow`），此前设置页无从编辑；「周末无高峰」= 周末无窗口命中 = 自动落到基础（低谷）价，无需新引擎逻辑。
+- **provider 级时区（`ProviderCurrency.timezone`）**：设置页 provider 头部新增 IANA 时区输入（文本 + 校验，非法拒存并报错，留空 = `Asia/Shanghai`）。`inPeakWindow` 的小时**与**星期几都按该时区计算（`Intl.DateTimeFormat` 换算，按分钟缓存），host 折叠、client 高峰标签共用同一判定——多 provider 各算各的钟，不再依赖运行机器/浏览器时区（消除 K3 审阅 P1-6 已知限制）。
+- **缺省时区 = `Asia/Shanghai`**：未配置 provider 时区（含全部旧配置）一律按北京时区判定。**行为变化**：此前按机器本地时区判定，若你的 host 不在 UTC+8 且配了高峰窗口，升级后归属可能变化——请为不按北京时区计费的 provider 显式配置时区。
+- **DeepSeek 官方规则一键预设**：`deepseek-official` provider 设置区新增「应用」按钮——把该 provider 每个模型的高峰窗口批量设为**仅工作日**（替换已有工作日窗口、保留周末/全天窗口），provider 时区置 `Asia/Shanghai`，价格保留用户现有配置（窗口只表达「哪些天高峰」）；幂等可重放。
+- **展示自动正确**：徽标「高峰/空闲」、卡片「空闲/高峰时段」拆分全部走共享 `inPeakWindow`——北京周末全天显示「空闲」、费用全入 off-peak 拆分。
+- **测试**：新增时区窗口判定（同一时刻在 Asia/Shanghai 为高峰、在 America/New_York 为低谷）、缺省北京时区、非法时区退化不抛错、provider 时区折叠归属（同一时刻两个 provider 各自 peak/off-peak）、工作日掩码周六/周日低谷。OVERNIGHT DAYS 测试改显式传 `Asia/Shanghai`，与机器时区解耦。
+
+---
+
 ### v0.3.18.1（修复：上下文占用条被裁掉不可见）
 
 - **上下文占用条回归修复（P0）**：卡片中的上下文进度条（`上下文占用 N% · 已用 / 窗口`）在 v0.3.16 的 K3 审查批次把压缩触发线包进 `<Tooltip>` 后**渲染但不可见**——Tooltip 的锚点 `<span>`（`display:inline-flex`、继承 16px 行高）是 `contextTrack` 的**文档流内**元素，把紧随其后的静态定位 `contextFill` 推到 4px 轨道下方 ~18px，被轨道的 `overflow:hidden` 整个裁掉。修复：`contextFill` 改为 `position:absolute; top:0; left:0`，作为 `contextTrack`（`position:relative`）的定位子元素，与触发线同层；此后任何文档流内兄弟元素都无法再把进度条挤出轨道。已在真实浏览器验证：修复前轨道 y=447 / 填充 y=465（18px 间隙、被裁），修复后两者同 y、填充可见。

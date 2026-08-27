@@ -111,10 +111,13 @@
   - 关闭开关时清空分段；无分段 → 始终按默认价计。
 - **高峰时段**：
   - 每个模型可配**多个**高峰窗口（起止小时 + 各自四价）；起止时间以时钟样式显示（`9:00`、`22:00`，结束可为 `24:00`）。
-  - 每个高峰窗口内结构为**时段 → 分段计费**：顶部是窗口的起止时间，其下「分段计费」块包含从**区间 1**（该窗口的默认/平价）开始的全部区间，区间按基础分段编号（只读），价格单独编辑（按索引对齐）。
+  - 每个高峰窗口内结构为**时段 → 生效星期 → 分段计费**：顶部是窗口的起止时间，其下「生效星期」（快捷 chip：每天 / 工作日(周一至五) / 周末(周六日)，或逐日勾选），再下「分段计费」块包含从**区间 1**（该窗口的默认/平价）开始的全部区间，区间按基础分段编号（只读），价格单独编辑（按索引对齐）。
+  - `days` 空/缺省 = 每天；工作日 = `[1,2,3,4,5]`；按**窗口起始日**判定（「周五 22:00–06:00」覆盖周六凌晨）。
+  - provider 头部可设**时区**（IANA 名，如 `Asia/Shanghai`；缺省 `Asia/Shanghai`）：窗口的小时与星期几都按该时区判定，多 provider 各算各的钟（DeepSeek 官方按北京时间计费）。
   - 高峰每段的区间用**区间记号**展示：`输入长度 [0, 32)`、`输出长度 [0, 0.2)`、`[0.2+)`——下限缺省 = 0、上限缺省 = `+`，无约束的维度不显示、全无约束的默认段显示「全部」。
   - 新增/删除分段时高峰窗口**同步增删**对应段，结构始终与空闲时段**完全一致**。
   - 不配任何高峰窗口 → 始终按空闲/默认价计。
+  - **DeepSeek 官方预设**：`deepseek-official` provider 设置区有「应用」按钮——把该 provider 每个模型的高峰窗口设为**仅工作日**（替换已有工作日窗口，保留周末/全天窗口），provider 时区置 `Asia/Shanghai`，价格保留用户配置；幂等可重放。
 - **保存**：经原生 `settingsScope` 按字段写入（`providers` / `models` 两个顶层字段，revision fencing；写入被宿主拒绝时静默重读，通过比对 user 层确认落盘），host `scope.watch` 触发投影重挂载、自动重算所有会话。
 - **从卡片定位**：悬浮卡片点齿轮打开设置面板时，若会话已知当前模型，locate 请求排队；计费卡片挂载（用户打开「插件」配置页）时消费——展开卡片与 provider 分组并滚动定位该模型行（`data-billing-model` 定位 + 视口自适应：下方空间足够则置顶，否则靠底显示）。
 - **未登记语义**：未填任何价格/时段/分段的新模型在保存时不写入（保持"未登记"）。
@@ -128,6 +131,7 @@
 - **分桶计价**：未缓存输入、命中缓存输入、缓存写入、输出分别按对应单价计；`cacheWrite` 未配置（或缺省）时按 0 计。
 - **缓存写入用真实 token 数，不估算**：`cacheWriteTokens` 来自每次请求持久化的 usage；按「缓存存储时长」计费的模型（如按 token·小时）因日志无时长维度不建模。
 - **高峰窗口匹配**：支持跨天窗口（如 22:00–06:00）；`days` 空/缺省 = 每天，非空 = 按**窗口起始日**的星期几过滤（「周五 22:00–06:00」覆盖周六凌晨）；起止相同 = 全天。
+- **窗口时区判定**：窗口的小时与星期几按 provider 的 `timezone`（缺省 `Asia/Shanghai`）计算（`Intl.DateTimeFormat` 换算），host 折叠与 client 高峰标签共用 `inPeakWindow` 单一事实源——多 provider 各按各的钟，host/浏览器时区不影响归属。
 - **reasoningEffort 匹配**：effort 精确匹配的价格行优先于无 effort 的通用行（与数组顺序无关）；无 effort 的请求只命中通用行（`findPriceRow` 单一事实源）。`peakModels` 的 key 在命中 effort 专属行时带第三段 effort（`provider/model/effort`），client 高峰标签据此查同一行。
 - **未登记计数**：无价格行的请求计入 `unpricedRequestCount`，不计入费用。
 - **多币种**：费用按 provider 币种分桶（`cost: {CNY, USD}`）。
@@ -201,7 +205,8 @@
 ```ts
 // ── 价格配置（设置页编辑、settings 命名空间存储；价格均为 PRICE_PRECISION 整数，单位 /M tokens）
 interface PriceTable {
-  providers: Record<string, { currency: 'CNY' | 'USD'; currencySymbol: string }>
+  providers: Record<string, { currency: 'CNY' | 'USD'; currencySymbol: string; timezone?: string }>
+  // timezone：IANA 名（如 Asia/Shanghai），决定该 provider 高峰窗口的判定钟；缺省 = Asia/Shanghai
   models: ModelPrice[]
 }
 interface ModelPrice {
@@ -328,7 +333,7 @@ interface TurnSummary extends TurnCost { requests: number }
 
 ## 9. 验收与测试
 
-- 纯逻辑测试：`tests/pure-check.ts`（`node tests/pure-check.ts` 直接跑，node ≥22.18 原生 type-stripping），覆盖计价、高峰/空闲、跨天窗口、分段取档（含边界）、高峰窗口自身分段、缓存写入独立计价、多币种、未登记、空 days=每天、精度。
+- 纯逻辑测试：`tests/pure-check.ts`（`node tests/pure-check.ts` 直接跑，node ≥22.18 原生 type-stripping），覆盖计价、高峰/空闲、跨天窗口、分段取档（含边界）、高峰窗口自身分段、缓存写入独立计价、多币种、未登记、空 days=每天、**时区判定（同一时刻跨时区归属相反、缺省北京时区、非法时区退化）**、精度。
 - 构建：`pnpm typecheck && pnpm build`。
 - 安装冒烟：`npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter` 后 `npx @deepseek-ai/dsh web` 启动，验证入口/卡片/设置页/刷新/保存。
 - 回归重点：命名顺序、多币种、高峰多时段、分段多档、未登记显示、热更新。

@@ -627,10 +627,9 @@ assert.equal(boundMulti[boundMulti.length - 1]!.turn, 51, 'newest turn preserved
 console.log('TURN BOUND CURRENCY CHECK PASSED')
 
 // --- overnight window × days: days filter by the window's START day ---
-// Built from a fixed DAY (Friday, getDay 5) in LOCAL time, so the assertions
-// hold on any host timezone (a fixed +08:00 literal would be a different
-// weekday in UTC-9 and later). The overnight rule reassigns the early-morning
-// half to the day the window OPENED.
+// The window is judged in the DEFAULT timezone (Asia/Shanghai). Dates are
+// built in LOCAL time, which on an Asia/Shanghai host IS Shanghai wall-clock;
+// the explicit timezone arg makes the semantics host-independent.
 const fridayLocal = (hour: number, min = 0) => {
   const d = new Date(2026, 7, 21, hour, min, 0, 0) // 2026-08-21 is a Friday
   return d.getTime()
@@ -639,17 +638,74 @@ const saturdayLocal = (hour: number, min = 0) => {
   const d = new Date(2026, 7, 22, hour, min, 0, 0) // 2026-08-22 is a Saturday
   return d.getTime()
 }
+const SH = 'Asia/Shanghai'
 const fridayPeak = { startHour: 22, endHour: 6, days: [5], input: 1, output: 1, cacheInput: 1 }
-assert.equal(inPeakWindow(fridayPeak, fridayLocal(23)), true, 'Fri 23:00 in Friday window')
-assert.equal(inPeakWindow(fridayPeak, saturdayLocal(2)), true, 'Sat 02:00 belongs to the Friday-opened window')
-assert.equal(inPeakWindow(fridayPeak, saturdayLocal(23)), false, 'Sat 23:00 opens a Saturday window — not configured')
-assert.equal(inPeakWindow(fridayPeak, fridayLocal(12)), false, 'Fri noon outside the window')
+assert.equal(inPeakWindow(fridayPeak, fridayLocal(23), SH), true, 'Fri 23:00 in Friday window')
+assert.equal(inPeakWindow(fridayPeak, saturdayLocal(2), SH), true, 'Sat 02:00 belongs to the Friday-opened window')
+assert.equal(inPeakWindow(fridayPeak, saturdayLocal(23), SH), false, 'Sat 23:00 opens a Saturday window — not configured')
+assert.equal(inPeakWindow(fridayPeak, fridayLocal(12), SH), false, 'Fri noon outside the window')
 // start === end reads as "all day".
 const allDay = { startHour: 9, endHour: 9, input: 1, output: 1, cacheInput: 1 }
-assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 0, 0, 0, 0).getTime()), true, 'start==end: midnight inside')
-assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 12, 0, 0, 0).getTime()), true, 'start==end: noon inside')
+assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 0, 0, 0, 0).getTime(), SH), true, 'start==end: midnight inside')
+assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 12, 0, 0, 0).getTime(), SH), true, 'start==end: noon inside')
 
 console.log('OVERNIGHT DAYS CHECK PASSED')
+
+// --- timezone-aware windows: hour AND weekday judged in the provider clock ---
+// 2026-08-17T00:30Z is 08:30 Monday in Shanghai but 20:30 Sunday in New York.
+// A weekday 09–12 window must be PEAK in Shanghai and OFF-PEAK in New York.
+const nycMorning = { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 1, output: 1, cacheInput: 1 }
+assert.equal(inPeakWindow(nycMorning, at('2026-08-17T01:30:00Z'), 'Asia/Shanghai'), true, '09:30 Mon Shanghai is peak')
+assert.equal(inPeakWindow(nycMorning, at('2026-08-17T01:30:00Z'), 'America/New_York'), false, '20:30 Sun New York is off-peak')
+assert.equal(inPeakWindow(nycMorning, at('2026-08-17T01:30:00Z')), true, 'absent timezone falls back to Asia/Shanghai')
+// The same instant flips between two providers' windows.
+assert.equal(inPeakWindow(nycMorning, at('2026-08-17T14:00:00Z'), 'Asia/Shanghai'), false, '22:00 Mon Shanghai is off-peak for a 09–12 window')
+assert.equal(inPeakWindow(nycMorning, at('2026-08-17T14:00:00Z'), 'America/New_York'), true, '10:00 Mon New York is peak')
+// Weekend mask + timezone: a weekday-only window is off-peak on Saturday
+// regardless of the clock's timezone, and peak on the Friday before.
+const weekdayPeak = { startHour: 0, endHour: 24, days: [1, 2, 3, 4, 5], input: 1, output: 1, cacheInput: 1 }
+// 2026-08-22 is a Saturday in Shanghai; 2026-08-21 is Friday.
+assert.equal(inPeakWindow(weekdayPeak, at('2026-08-21T12:00:00+08:00'), 'Asia/Shanghai'), true, 'Friday peak (weekday)')
+assert.equal(inPeakWindow(weekdayPeak, at('2026-08-22T12:00:00+08:00'), 'Asia/Shanghai'), false, 'Saturday off-peak (weekend, official rule)')
+assert.equal(inPeakWindow(weekdayPeak, at('2026-08-23T12:00:00+08:00'), 'Asia/Shanghai'), false, 'Sunday off-peak (weekend)')
+// A provider WITHOUT a timezone is judged in Shanghai: an instant that is
+// Saturday in Shanghai but Friday in a -12 zone must be OFF-peak (Saturday).
+const farWest = at('2026-08-22T12:00:00-12:00') // 2026-08-23 08:00 +08
+assert.equal(inPeakWindow(weekdayPeak, farWest), false, 'default Shanghai: still Sunday there → off-peak')
+// Invalid timezone degrades to the default rather than throwing.
+assert.equal(inPeakWindow(weekdayPeak, at('2026-08-21T12:00:00+08:00'), 'Not/A-Real-Zone'), true, 'invalid tz falls back to Asia/Shanghai')
+
+console.log('TIMEZONE WINDOW CHECK PASSED')
+
+// --- fold prices by the provider timezone: peak attribution follows the
+//     provider's clock, not the machine's ---
+const tzTable: PriceTable = {
+  providers: {
+    deepseekOfficial: { currency: 'CNY', currencySymbol: '¥', timezone: 'Asia/Shanghai' },
+    nyc: { currency: 'USD', currencySymbol: '$', timezone: 'America/New_York' },
+  },
+  models: [
+    { provider: 'deepseekOfficial', model: 'm', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: 0,
+      periods: [{ startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: cnyPerMillion(2), output: cnyPerMillion(4), cacheInput: 0 }] },
+    { provider: 'nyc', model: 'm', input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: 0,
+      periods: [{ startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: cnyPerMillion(2), output: cnyPerMillion(4), cacheInput: 0 }] },
+  ],
+}
+// 2026-08-17T01:30Z: 09:30 Mon in Shanghai, 20:30 Sun in New York.
+const tzLog: SessionEvent[] = [
+  { type: 'request/header', seq: 0, time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'deepseekOfficial', model: 'm' } }, reason: 'initial' } },
+  { type: 'assistant/message', seq: 1, time: at('2026-08-17T01:30:00Z'), data: { turn: 1, step: 1, message: assistantMessage('deepseekOfficial', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
+  { type: 'request/header', seq: 2, time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'nyc', model: 'm' } }, reason: 'change' } },
+  { type: 'assistant/message', seq: 3, time: at('2026-08-17T01:30:00Z'), data: { turn: 2, step: 1, message: assistantMessage('nyc', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
+]
+const tzStats = foldBilling(tzLog, tzTable)
+assert.equal(tzStats.turns[0]!.period, 'peak', 'Shanghai request is peak (09:30 Mon)')
+assert.equal(tzStats.turns[1]!.period, 'off-peak', 'New York request is off-peak (20:30 Sun)')
+assert.equal(tzStats.byPeriod['CNY']!.peak, priceTokens(100, cnyPerMillion(2)) + priceTokens(50, cnyPerMillion(4)), 'Shanghai peak split')
+assert.equal(tzStats.byPeriod['USD']!.offPeak, priceTokens(100, cnyPerMillion(1)) + priceTokens(50, cnyPerMillion(2)), 'New York off-peak split')
+assert.equal(tzStats.byPeriod['CNY']!.offPeak, 0, 'no CNY off-peak')
+
+console.log('PROVIDER TIMEZONE FOLD CHECK PASSED')
 
 // --- fence: loopback + JSON content-type + no cross-site fetch ---
 const fenceReq = (headers: Record<string, string>) => ({ headers: headers as never })

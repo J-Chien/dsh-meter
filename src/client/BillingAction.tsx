@@ -58,7 +58,8 @@ function inPeakNow(peakModels: readonly string[], table: PriceTable | undefined,
     const effort = slash2 > 0 ? rest.slice(slash2 + 1) : undefined
     const row = findPriceRow(table, provider, model, effort)
     if (row?.periods === undefined) continue
-    if (row.periods.some(p => inPeakWindow(p, timeMs))) return true
+    const timezone = table.providers[provider]?.timezone
+    if (row.periods.some(p => inPeakWindow(p, timeMs, timezone))) return true
   }
   return false
 }

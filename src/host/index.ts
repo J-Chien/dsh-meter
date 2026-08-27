@@ -25,6 +25,8 @@ import type { BillingFoldState } from './session-stats.ts'
 import { DEFAULT_TABLE } from './default-prices.ts'
 import { BillingRouteError, readJsonBody, writeError, writeOk } from './wire.ts'
 import { billingFence } from './fence.ts'
+// Host-side `billing` key merge into SessionProjectionStateMap (type-only).
+import type {} from './projection-types.ts'
 
 /** The settings namespace for this plugin. */
 export const PRICING_NS = settingsNamespace(PRICING_NAMESPACE)
@@ -67,6 +69,9 @@ const modelPriceSchema = z.object({
 const providerCurrencySchema = z.object({
   currency: z.union([z.const('CNY'), z.const('USD')]).default('CNY'),
   currencySymbol: z.string().default('¥'),
+  // IANA timezone for judging this provider's peak windows; absent → the
+  // settings page seeds Asia/Shanghai and the fold falls back to it anyway.
+  timezone: z.string().max(64),
 })
 
 const priceTableSchema = z.object({
@@ -137,56 +142,88 @@ export function apply(ctx: HostContext): void {
     disposeProjection?.()
     disposeProjection = undefined
     holder.table = freezeTable(scope.get())
-    disposeProjection = registry?.register<'billing', BillingProjectionState>({
-      key: 'billing',
-      schema: zod.object({
-        uncachedInputTokens: zod.number().int().nonnegative(),
+    // The wire view a client consumes is the fold's `stats` half; the fold's
+    // persisted state carries `{config, stats}`. dsh ≤ 0.1.0-rc.7 validated
+    // the VIEW with a top-level `schema`; dsh ≥ 0.1.1-rc.1 validates the
+    // persisted STATE with `stateSchema` and the view with `wire.viewSchema`
+    // (and only a `wire`-carrying unit is snapshotted + pushed to clients).
+    // Both shapes are emitted so one registration works across the harness
+    // versions dsh-meter supports (extra keys are ignored by each reader).
+    const statsSchema = zod.object({
+      uncachedInputTokens: zod.number().int().nonnegative(),
+      cacheReadTokens: zod.number().int().nonnegative(),
+      cacheWriteTokens: zod.number().int().nonnegative(),
+      outputTokens: zod.number().int().nonnegative(),
+      // Price units are integers by construction (priceTokens floors); a
+      // float here would mean the settings schema let a fractional price
+      // through, so fail the frame loud instead of rendering a bogus cost.
+      cacheHitRate: zod.number().min(0).max(1),
+      requestCount: zod.number().int().nonnegative(),
+      unpricedRequestCount: zod.number().int().nonnegative(),
+      hasPeakConfig: zod.boolean(),
+      peakModels: zod.array(zod.string()),
+      currentModel: zod.object({
+        provider: zod.string(),
+        model: zod.string(),
+        reasoningEffort: zod.string().optional(),
+      }).optional(),
+      cost: zod.record(zod.string(), zod.number().int().nonnegative()),
+      byPeriod: zod.record(zod.string(), zod.object({
+        offPeak: zod.number().int().nonnegative(),
+        peak: zod.number().int().nonnegative(),
+      })),
+      turns: zod.array(zod.object({
+        turn: zod.number().int().nonnegative(),
+        step: zod.number().int().nonnegative(),
+        time: zod.number().int().nonnegative(),
+        inputTokens: zod.number().int().nonnegative(),
         cacheReadTokens: zod.number().int().nonnegative(),
         cacheWriteTokens: zod.number().int().nonnegative(),
         outputTokens: zod.number().int().nonnegative(),
-        // Price units are integers by construction (priceTokens floors); a
-        // float here would mean the settings schema let a fractional price
-        // through, so fail the frame loud instead of rendering a bogus cost.
-        cacheHitRate: zod.number().min(0).max(1),
-        requestCount: zod.number().int().nonnegative(),
-        unpricedRequestCount: zod.number().int().nonnegative(),
-        hasPeakConfig: zod.boolean(),
-        peakModels: zod.array(zod.string()),
-        currentModel: zod.object({
-          provider: zod.string(),
-          model: zod.string(),
-          reasoningEffort: zod.string().optional(),
-        }).optional(),
+        cacheHitRate: zod.number(),
+        cost: zod.number().int().nonnegative(),
+        currency: zod.string(),
+        period: zod.union([zod.literal('peak'), zod.literal('off-peak')]),
+        priced: zod.boolean(),
+      })),
+      lastRequestInputTokens: zod.number().int().nonnegative().optional(),
+      contextWindow: zod.number().int().positive().optional(),
+      maxOutputTokens: zod.number().int().positive().optional(),
+      compactions: zod.object({
+        count: zod.number().int().nonnegative(),
+        lastTime: zod.number().int().nonnegative().optional(),
+        lastShadowedTokens: zod.number().int().nonnegative().optional(),
+        tokens: zod.number().int().nonnegative(),
         cost: zod.record(zod.string(), zod.number().int().nonnegative()),
-        byPeriod: zod.record(zod.string(), zod.object({
-          offPeak: zod.number().int().nonnegative(),
-          peak: zod.number().int().nonnegative(),
-        })),
-        turns: zod.array(zod.object({
-          turn: zod.number().int().nonnegative(),
-          step: zod.number().int().nonnegative(),
-          time: zod.number().int().nonnegative(),
-          inputTokens: zod.number().int().nonnegative(),
-          cacheReadTokens: zod.number().int().nonnegative(),
-          cacheWriteTokens: zod.number().int().nonnegative(),
-          outputTokens: zod.number().int().nonnegative(),
-          cacheHitRate: zod.number(),
-          cost: zod.number().int().nonnegative(),
-          currency: zod.string(),
-          period: zod.union([zod.literal('peak'), zod.literal('off-peak')]),
-          priced: zod.boolean(),
-        })),
-        lastRequestInputTokens: zod.number().int().nonnegative().optional(),
-        contextWindow: zod.number().int().positive().optional(),
-        maxOutputTokens: zod.number().int().positive().optional(),
-        compactions: zod.object({
-          count: zod.number().int().nonnegative(),
-          lastTime: zod.number().int().nonnegative().optional(),
-          lastShadowedTokens: zod.number().int().nonnegative().optional(),
-          tokens: zod.number().int().nonnegative(),
-          cost: zod.record(zod.string(), zod.number().int().nonnegative()),
-        }),
-      }) as unknown as zod.ZodType<SessionBillingStats>,
+      }),
+    })
+    const stateSchema = zod.object({
+      config: zod.object({
+        provider: zod.string(),
+        model: zod.string(),
+        reasoningEffort: zod.string().optional(),
+        temperature: zod.number().optional(),
+        maxTokens: zod.number().int().positive().optional(),
+        stop: zod.array(zod.string()).optional(),
+      }).optional(),
+      stats: statsSchema,
+    })
+    // Legacy rc.7 fields (dsh ≤ 0.1.0-rc.7 reads a top-level `schema` + `view`
+    // as the wire-view pair). Spread separately so the 0.1.1-rc.1 literal stays
+    // excess-property-clean while the emitted object still carries them — each
+    // registry version reads only the keys it knows.
+    const legacyWire = {
+      schema: statsSchema as unknown as zod.ZodType<SessionBillingStats>,
+      view: (state: BillingProjectionState) => state.stats,
+    }
+    disposeProjection = registry?.register<'billing', BillingProjectionState>({
+      key: 'billing',
+      // dsh ≥ 0.1.1-rc.1: persisted-state validation (state) + wire view (stats).
+      stateSchema: stateSchema as unknown as zod.ZodType<BillingProjectionState>,
+      wire: {
+        viewSchema: statsSchema as unknown as zod.ZodType<SessionBillingStats>,
+        view: state => state.stats,
+      },
       init: () => ({ config: undefined, stats: EMPTY_STATS }),
       // The fold keeps full history; bound turns by TURN here so every pushed
       // frame stays at RECENT_TURNS_CAP turns (bounded projection size) while
@@ -198,10 +235,10 @@ export function apply(ctx: HostContext): void {
         }
         return next
       },
-      view: state => state.stats,
       // The table revision participates so a price edit invalidates every
       // checkpoint folded with old prices (see tableRevision).
       stateVersion: STATE_VERSION_BASE * 2 ** 20 + (tableRevision(holder.table) % 2 ** 20),
+      ...legacyWire,
     })
   }
 

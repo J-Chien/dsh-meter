@@ -226,6 +226,121 @@
   flex: none;
 }
 
+/* Timezone editor + official-rule preset, stacked under the currency row. */
+.providerTzRow {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tzField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.tzInput {
+  width: 168px;
+  padding: 4px 8px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-sunken);
+  color: var(--billing-text-primary);
+  font-family: var(--billing-font-mono);
+  font-size: 11px;
+}
+
+.tzError {
+  color: var(--billing-state-error);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.presetBtn {
+  padding: 4px 10px;
+  border: 1px solid var(--billing-state-business-soft);
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-panel);
+  color: var(--billing-state-business);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.presetBtn:hover:not(:disabled) {
+  background: var(--billing-hover-bg);
+}
+
+.presetBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── 生效星期（weekday chips）── */
+
+.daysRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.daysQuick {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.daysChip {
+  padding: 2px 8px;
+  border: 1px solid var(--billing-border-l2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--billing-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.daysChip:hover {
+  color: var(--billing-text-primary);
+  background: var(--billing-hover-bg);
+}
+
+.daysChipActive {
+  border-color: var(--billing-state-business);
+  color: var(--billing-state-business);
+  background: color-mix(in srgb, var(--billing-state-business) 10%, transparent);
+}
+
+.daysChecks {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dayCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--billing-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dayCheck input {
+  accent-color: var(--billing-state-business);
+}
+
+.daysHint {
+  color: var(--billing-text-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+}
+
 .currencySelect {
   display: inline-flex;
   align-items: center;
