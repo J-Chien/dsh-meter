@@ -12,9 +12,9 @@ import {
   IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, findPriceRow, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
+import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, findPriceRow, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { formatPrice, formatTime, formatTokens } from './format.ts'
-import { refreshSessionStats } from './billing-api.ts'
+import { refreshSessionStats, getSubagentsStats } from './billing-api.ts'
 import { usePricingTable } from './pricing-scope.ts'
 import { requestLocateModel } from './locate.ts'
 import type {} from './types.ts'
@@ -25,6 +25,9 @@ import { CLICK_DELAY_MS, HOVER_CLOSE_MS, HOVER_OPEN_MS } from './interaction.ts'
 import { Tooltip, useTooltipState } from './Tooltip.tsx'
 import './theme.module.css'
 import css from './BillingAction.module.css'
+
+/** Poll cadence for the subagent section while a child is running. */
+const SUBAGENTS_POLL_MS = 5_000
 
 /** The inject face apply passes to this component. */
 export interface BillingActionInjected {
@@ -80,6 +83,9 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   const [refreshing, setRefreshing] = useState(false)
   const [peakNow, setPeakNow] = useState(false)
   const [turnsOpen, setTurnsOpen] = useState(false)
+  // Bumped by the refresh button so the subagent section (route-fetched, not
+  // on the projection feed) re-runs its fetch together with the main stats.
+  const [subagentsReload, setSubagentsReload] = useState(0)
 
   // The price table rides the native settingsScope binding: a save commits the
   // Host document, whose update event re-seeds every subscriber — across tabs
@@ -112,6 +118,8 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
     try {
       // The peak tag re-evaluates off the peakKey effect above when the fresh
       // stats land; the table itself stays live via the scope subscription.
+      // The subagent section watches subagentsReload and refetches too.
+      setSubagentsReload(key => key + 1)
       setOverride(await refreshSessionStats(String(sessionId)))
     } finally {
       setRefreshing(false)
@@ -123,10 +131,11 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   const unpriced = stats.requestCount === 0 && stats.unpricedRequestCount > 0
 
   const card = useMemo(() => (
-    <BillingCard stats={stats} t={t} refreshing={refreshing}
+    <BillingCard sessionId={String(sessionId)} stats={stats} t={t} refreshing={refreshing}
+      subagentsReload={subagentsReload}
       onRefresh={() => void doRefresh()}
       onDetail={() => setTurnsOpen(true)} />
-  ), [stats, t, refreshing, doRefresh])
+  ), [sessionId, stats, t, refreshing, subagentsReload, doRefresh])
 
   return (
     <>
@@ -350,10 +359,13 @@ function BillingPopover({ renderTrigger, content }: {
 }
 
 /** The hover card body. */
-function BillingCard({ stats, t, refreshing, onRefresh, onDetail }: {
+function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefresh, onDetail }: {
+  sessionId: string
   stats: SessionBillingStats
   t: (key: BillingKey) => string
   refreshing: boolean
+  /** Bumped to force the subagent section's fetch (refresh button). */
+  subagentsReload: number
   onRefresh: () => void
   onDetail: () => void
 }) {
@@ -444,6 +456,8 @@ function BillingCard({ stats, t, refreshing, onRefresh, onDetail }: {
         {turns.length > 0 ? (
           <TurnsBarChart turns={turns} t={t} />
         ) : null}
+
+        <SubagentsSection sessionId={sessionId} t={t} reloadKey={subagentsReload} />
 
         {contextRatio !== undefined ? (
           <ContextBar ratio={contextRatio} t={t} stats={stats} />
@@ -697,6 +711,141 @@ function PeriodSplit({ stats, t }: {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/** One subagent's display name: durable descriptor label when present,
+ *  else the tail of the opaque session id. */
+function subagentName(row: SubagentBillingRow): string {
+  if (row.label !== undefined) return row.label
+  const id = row.sessionId
+  return id.length > 10 ? id.slice(-8) : id
+}
+
+/**
+ * The card's subagent section: family totals plus one row per descendant.
+ * Data is NOT on the projection (a running child keeps the parent's log
+ * silent, and cold children are persistence-only), so it loads when the
+ * card opens and re-polls every POLL while any child is still running;
+ * the refresh button forces a refetch via `reloadKey`.
+ *
+ * Failures degrade QUIETLY: keep any previously loaded rows and otherwise
+ * leave the whole section hidden — the route folds fresh on every call, so
+ * the next open/reload retries anyway. A host older than this build simply
+ * lacks the method (404) and would otherwise stamp an error onto EVERY
+ * session, subagent-free ones included.
+ */
+function SubagentsSection({ sessionId, t, reloadKey }: {
+  sessionId: string
+  t: (key: BillingKey) => string
+  reloadKey: number
+}) {
+  const [stats, setStats] = useState<SubagentsBillingStats | undefined>(undefined)
+
+  // Fetch + poll while open: the interval keeps the LAST promise's decision —
+  // a running child OR a pending backlog (the host warms cold folds in the
+  // background a slice at a time) keeps the loop alive so the card converges
+  // on the complete, exact bill without user action.
+  useEffect(() => {
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = async (): Promise<void> => {
+      try {
+        const fresh = await getSubagentsStats(sessionId)
+        if (!alive) return
+        setStats(fresh)
+        if (fresh.runningCount > 0 || (fresh.pendingCount ?? 0) > 0) {
+          timer = setTimeout(() => { void load() }, SUBAGENTS_POLL_MS)
+        }
+      } catch {
+        // Stay hidden (see the doc comment above).
+      }
+    }
+    void load()
+    return () => {
+      alive = false
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [sessionId, reloadKey])
+
+  // Nothing loaded yet, or a session genuinely without subagents: no section.
+  if (stats === undefined || stats.totalCount === 0) return null
+
+  // Per-currency totals/averages. The average divides by the host's FULL-walk
+  // billed count (`billedCount`) — the visible `children` list may be capped
+  // at 100 rows, so counting it here would skew averages on big trees.
+  const currencies = Object.keys(stats.cost).sort((a, b) => a.localeCompare(b))
+  const totalText = currencies.map(c => formatPrice(stats.cost[c] ?? 0, currencySymbol(c))).join(' + ')
+  const avgText = currencies.map(c => {
+    const billed = stats.billedCount?.[c] ?? stats.children.filter(child => (child.cost[c] ?? 0) > 0).length
+    return formatPrice(billed > 0 ? Math.round((stats.cost[c] ?? 0) / billed) : 0, currencySymbol(c))
+  }).join(' + ')
+
+  return (
+    <div className={css.subsBlock}>
+      <div className={css.subsHead}>
+        <span className={css.subsLabel}>{t('subagents.title')}</span>
+        <span className={css.subsRunning}>
+          {stats.runningCount > 0 ? `● ${t('subagents.running').replace('{count}', String(stats.runningCount))}` : ''}
+        </span>
+        <span className={css.subsSummary}>
+          {t('subagents.summary')
+            .replace('{direct}', String(stats.directCount))
+            .replace('{total}', String(stats.totalCount))}
+        </span>
+      </div>
+      {(stats.pendingCount ?? 0) > 0 ? (
+        <div className={css.subsPending}>{t('subagents.pending').replace('{count}', String(stats.pendingCount))}</div>
+      ) : null}
+      {currencies.length > 0 ? (
+        <div className={css.subsTotals}>
+          <span>{t('subagents.totalCost')} <span className={css.subsAmount}>{totalText}</span></span>
+          <span>{t('subagents.avgCost')} <span className={css.subsAmount}>{avgText}</span></span>
+        </div>
+      ) : null}
+      {stats.truncated ? <div className={css.subsTruncated}>{t('subagents.truncated')}</div> : null}
+      <div className={css.subsRows}>
+        {stats.children.map(row => (
+          <SubagentRowView key={row.sessionId} row={row} t={t} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** One subagent line: depth indent, activity dot, name, token totals, cost. */
+function SubagentRowView({ row, t }: {
+  row: SubagentBillingRow
+  t: (key: BillingKey) => string
+}) {
+  const costEntries = Object.entries(row.cost)
+    .filter(([, units]) => units > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+  const costText = costEntries.length === 0
+    ? (row.unpricedRequestCount > 0 ? t('turn.unpriced') : '')
+    : costEntries.map(([code, units]) => formatPrice(units, currencySymbol(code))).join(' + ')
+  const [, setTooltipAnchor, tooltip] = useTooltipState({
+    label: `${subagentName(row)} · ${t('row.input')} ${formatTokens(row.inputTokens)} · ${t('row.output')} ${formatTokens(row.outputTokens)}`,
+    align: 'start',
+  })
+  return (
+    <div
+      className={css.subsRow}
+      style={{ paddingLeft: `${(row.depth - 1) * 14}px` }}
+      onPointerEnter={(e) => setTooltipAnchor(e.currentTarget)}
+      onPointerLeave={() => setTooltipAnchor(null)}
+    >
+      <span
+        className={`${css.subsDot}${row.activity !== 'running' ? ` ${css.subsDotOff}` : ''}${row.activity === 'cold' ? ` ${css.subsDotCold}` : ''}`}
+        aria-label={t(`subagent.${row.activity}` as BillingKey)}
+      />
+      <span className={css.subsName}>{subagentName(row)}</span>
+      <span className={css.subsTokens}>{`${formatTokens(row.inputTokens)} → ${formatTokens(row.outputTokens)}`}</span>
+      <span className={`${css.subsCost}${row.unpricedRequestCount > 0 && row.requestCount === 0 ? ` ${css.subsCostUnpriced}` : ''}`}>
+        {costText}
+      </span>
+      {tooltip}
     </div>
   )
 }

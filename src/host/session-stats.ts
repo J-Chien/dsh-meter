@@ -23,7 +23,9 @@ type HeaderConfig = EpochHeader['config']
 
 /** The fold's full mutable state: latest request config + accumulated stats. */
 export interface BillingFoldState {
-  config: HeaderConfig | undefined
+  // Optional key (not `| undefined`): the persisted state is checkpointed as
+  // lossless JSON, so an absent config must be an absent key.
+  config?: HeaderConfig
   stats: SessionBillingStats
 }
 
@@ -39,6 +41,12 @@ function cloneStats(stats: SessionBillingStats): SessionBillingStats {
     turns: [...stats.turns],
     compactions: { ...stats.compactions, cost: { ...stats.compactions.cost } },
   }
+}
+
+/** Pair config with stats, omitting the key entirely while no header config
+ *  has been seen — the checkpoint must stay lossless JSON. */
+function withConfig(config: HeaderConfig | undefined, stats: SessionBillingStats): BillingFoldState {
+  return config === undefined ? { stats } : { config, stats }
 }
 
 /** Whether a price row with peak periods exists for the model. */
@@ -73,7 +81,7 @@ export function foldEvent(
     const stats = cloneStats(state.stats)
     if (next === undefined) delete stats.contextWindow
     else stats.contextWindow = next
-    return { config: state.config, stats }
+    return withConfig(state.config, stats)
   }
   if (event.type === 'request/header') {
     const { config } = event.data.header
@@ -99,7 +107,7 @@ export function foldEvent(
     }
     if (config.maxTokens === undefined) delete stats.maxOutputTokens
     else stats.maxOutputTokens = config.maxTokens
-    return { config, stats }
+    return withConfig(config, stats)
   }
   if (event.type === 'assistant/message' && event.data.usage !== undefined) {
     const config = state.config
@@ -170,7 +178,7 @@ export function foldEvent(
 
     const totalInput = stats.uncachedInputTokens + stats.cacheReadTokens
     stats.cacheHitRate = totalInput > 0 ? stats.cacheReadTokens / totalInput : 0
-    return { config, stats }
+    return withConfig(config, stats)
   }
   if (event.type === 'compaction/summary') {
     // A successful compaction's shadow price: the exact heuristic tokens of
@@ -215,7 +223,7 @@ export function foldEvent(
         stats.unpricedRequestCount += 1
       }
     }
-    return { config: state.config, stats }
+    return withConfig(state.config, stats)
   }
   return state
 }
@@ -225,7 +233,7 @@ export function foldBilling(
   events: readonly SessionEvent[],
   table: PriceTable,
 ): SessionBillingStats {
-  let state: BillingFoldState = { config: undefined, stats: EMPTY_STATS }
+  let state: BillingFoldState = { stats: EMPTY_STATS }
   for (const event of events) state = foldEvent(state, event, table)
   return state.stats
 }

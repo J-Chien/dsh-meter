@@ -8,9 +8,9 @@
  * `pricing-scope.ts`). These routes remain for what the settings RPC does
  * not cover: the live LLM catalog and on-demand session folds.
  */
-import type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost } from '../shared.ts'
+import type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
 
-export type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost } from '../shared.ts'
+export type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
 
 /** One provider group in the editor catalog. */
 export interface ProviderCatalogRow {
@@ -67,4 +67,13 @@ export async function getTurns(sessionId: string): Promise<TurnCost[]> {
 export async function refreshSessionStats(sessionId: string): Promise<SessionBillingStats> {
   const value = await call<{ stats: SessionBillingStats }>('refresh', { sessionId })
   return value.stats
+}
+
+/**
+ * Fold one session's whole subagent tree (each child's own log, current
+ * price table) into family totals + per-child rows. Stateless: every call
+ * re-folds fresh, so pollers simply call again.
+ */
+export async function getSubagentsStats(sessionId: string): Promise<SubagentsBillingStats> {
+  return call<SubagentsBillingStats>('subagents', { sessionId })
 }

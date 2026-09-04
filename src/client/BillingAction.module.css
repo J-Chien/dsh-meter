@@ -552,3 +552,147 @@
   line-height: 14px;
 }
 
+
+/* ── Subagent section: family totals + one row per descendant ─────────── */
+.subsBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--billing-border-l2);
+}
+
+.subsHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.subsLabel {
+  color: var(--billing-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.subsRunning {
+  color: var(--billing-state-success);
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.subsSummary {
+  color: var(--billing-text-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.subsTotals {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  color: var(--billing-text-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.subsAmount {
+  color: var(--billing-text-secondary);
+  font-family: var(--billing-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.subsRows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 148px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  min-width: 0;
+}
+
+.subsRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  border-radius: 3px;
+}
+
+.subsDot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--billing-state-success);
+}
+
+.subsDotOff {
+  background: var(--billing-text-tertiary);
+  opacity: 0.55;
+}
+
+.subsDotCold {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--billing-text-tertiary);
+}
+
+.subsName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--billing-text-primary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.subsTokens {
+  flex: none;
+  color: var(--billing-text-tertiary);
+  font-family: var(--billing-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+.subsCost {
+  flex: none;
+  min-width: 48px;
+  text-align: right;
+  color: var(--billing-text-secondary);
+  font-family: var(--billing-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.subsCostUnpriced {
+  color: var(--billing-state-warn-label);
+}
+
+.subsTruncated {
+  color: var(--billing-text-tertiary);
+  font-size: 9px;
+  line-height: 12px;
+}
+
+.subsPending {
+  color: var(--billing-text-tertiary);
+  font-size: 9px;
+  line-height: 12px;
+}

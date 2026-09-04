@@ -5,7 +5,21 @@
 
 ---
 
-### v0.3.19（高峰时段：工作日/周末 + 时区判定 + DeepSeek 官方预设）
+### v0.3.20（悬浮卡片：子代理费用统计）
+
+subagent 在 harness 中是**独立会话**（header `origin: 'subagent'` + `parentSession`），其用量从不进父会话日志，父会话的 `billing` 投影天然看不到。本版把会话的后代子代理费用搬进悬浮卡片。
+
+- **新路由 `/billing/api/subagents`**：入参 `{ sessionId }`，宿主枚举该会话的全部后代子代理并逐个折叠其**自身日志**（与父会话同一个 fold + 当前价格表），返回家族合计 + 每个子代理一行。**性能契约（v0.3.20 实测 341 子会话教训——首版每请求全量重折叠把宿主主线程阻塞到整页发白、会话出不来）**：每个子折叠按「水位」缓存（活会话 = 已折事件 seq；冷会话 = 持久化 revision token）+ 价格表指纹，未变化的直接复用零成本；冷会话读按请求预算（`COLD_FOLD_BUDGET=24`），本次响应立刻返回，**余量交后台 warmer 自热**——分片 drain、每片之间 `setImmediate` 让出主线程（一次只有一个 warmer 循环，新请求重排队列即接管），所以打开过一次的会话家族很快达到「全量已缓存」，之后每次打开秒出精确全量价。wire 的 `pendingCount` 告知客户端「合计还在增长」：卡片打开期间只要 `pendingCount > 0` 或有运行中子代就每 5s 继续轮询，并显示「统计中，还有 N 个历史会话在后台汇总…」。行按创建时间**倒序**（最新优先）后截断 `SUBAGENT_ROWS_CAP=100`。
+- **枚举语义（对齐 harness `listDescendants`）**：live-preferred 双源语料（`ctx.sessions` + 可选 `sessionPersistence.list()`），live 记录整 id 优先；沿 header `parentSession` 树 pre-order 遍历（兄弟按 createdAt→id 排序），只有 `origin: 'subagent'` 的节点计为子代理——普通/fork 分支继续向下穿透（连续型子代理可能挂在其下）但**不增加计费深度**；visited 集合防 fork 回环。深度 = 相对根的**可计费跳数**（直接子代 = 1）。
+- **运行态判定（纯折叠）**：log 尾部最后一个轮次边界决定——尾随 `turn/start` = 运行中；任何 `turn/end`（含 aborted/error）= 已结束；无边界 = 未开始。冷子会话读 `persistence.inspect()`（4 并发上限、单子失败降级省略该行不影响整体）；缺 persistence 时仅枚举活会话。
+- **wire 类型（shared.ts）**：`SubagentBillingRow`（sessionId/label/depth/activity/requestCount/unpriced/inputTokens/outputTokens/per 币种 cost）+ `SubagentsBillingStats`（directCount/totalCount/runningCount/totals/per 币种 `billedCount`/cost/children/truncated）；行列表截断于 `SUBAGENT_ROWS_CAP=100`（合计与 `billedCount` 仍覆盖全部发现节点），发现树硬上限 `SUBAGENT_TREE_CAP=500`。label 取自子日志最后一条 `subagent/descriptor` 事件的 data.label（one-shot 可缺省 → 卡片显示短 id；类型标签在 envelope 层，dsh-subagent 不在依赖表内故结构化读取）。「平均费用」不入 wire——客户端用全量口径的 `billedCount` 现算除法（截断时可见行数不足以做分母），避免第二处口径漂移。
+- **卡片「子代理」小节**：位于逐轮图与上下文占用条之间——汇总行（运行中 N 红点提示 + 直接/总计个数）+ 合计/平均费用行 + 每子代一行（深度缩进、活动圆点：绿=运行中/灰=结束/空心=历史冷会话、名称、输入→输出 token、右侧费用；未登记标琥珀色「未登记」）；超过 100 行时显示「仅显示前 100 行，合计已包含全部」。数据独立拉取：卡片打开即取，有运行中子代期间 5s 轮询自续（关闭卡片即停），点刷新按钮与主统计一起重取；无子代会话整节隐藏。**头部徽标与 hero 数字保持本会话口径不变**，子代费用独立成节不混入（多币种各自分列，不做汇率换算）。
+- **投影零改动**：`SessionBillingStats` 形状、zod schema、`stateVersion` 均不动；改动收敛在 shared wire 类型、host 新模块（`subagent-pure.ts` 纯函数 / `subagent-stats.ts` IO 编排 / index 接线路由 + 抽出 `requireSessionId` 共用校验）、client 拉取与小节渲染、locales 双语。**拉取失败静默降级**——小节整个隐藏（旧宿主缺该方法时 404，绝不在每个会话上盖一条错误；下次打开/刷新自动重试）。
+- **工程**：peer/devDep 新增 `@deepseek-ai/dsh-session-persistence`（类型擦除导入 + host 读冷会话，不引入 dsh-subagent 包——descriptor label 结构化读取）；新增测试：hasOpenTurn 边界判定（空日志/尾随 start/闭合 end/无边界）、树发现（pre-order、可计费深度、穿透普通分支、origin 无 parent 不计、未知根空结果）、聚合（直接数/运行数/token/多币种合并、130 行截断至 100 且合计仍覆盖 130）。
+
+---
+
+### v0.3.19（高峰时段：工作日/周末 + provider 时区判定 + DeepSeek 官方预设）
 
 对应 DeepSeek 2026-08-23 峰谷计费新规——工作日保留峰谷、周末全天低谷价。
 

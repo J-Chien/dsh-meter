@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
+// Fixtures build events by hand; the real log stamps branded seqs.
+const SQ = (n: number): SessionSeq => n as SessionSeq
 import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
 import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow } from '../src/shared.ts'
 import type { PriceTable, TurnCost } from '../src/shared.ts'
+import type { SubagentsBillingStats } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
 import { billingFence } from '../src/host/fence.ts'
 
@@ -41,7 +44,7 @@ const table: PriceTable = {
   }],
 }
 const hdr = (time: number): SessionEvent<'request/header'> => ({
-  type: 'request/header', seq: 0, time,
+  type: 'request/header', seq: SQ(0), time,
   data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash' } }, reason: 'initial' },
 })
 // The fold reads only `usage`; the message payload just needs to satisfy the
@@ -51,7 +54,7 @@ const assistantMessage = (provider: string, model: string) => ({
   source: { kind: 'model' as const, provider, model },
 })
 const msg = (seq: number, time: number, input: number, output: number, cacheRead: number): SessionEvent<'assistant/message'> => ({
-  type: 'assistant/message', seq, time,
+  type: 'assistant/message', seq: SQ(seq), time,
   data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead } },
   surfaceOp: 'append',
 })
@@ -95,15 +98,15 @@ assert.equal(stats.lastRequestInputTokens, 100, 'lastRequestInputTokens = most r
 
 // --- request/context: set window, clear on unknown-capacity switch ---
 const ctxLog: SessionEvent[] = [
-  { type: 'request/context', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', contextWindow: 128_000 } },
-  { type: 'request/context', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash' } },
+  { type: 'request/context', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', contextWindow: 128_000 } },
+  { type: 'request/context', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash' } },
 ]
 assert.equal(foldBilling(ctxLog, table).contextWindow, undefined, 'request/context absent window clears it')
 assert.equal(foldBilling(ctxLog.slice(0, 1), table).contextWindow, 128_000, 'request/context present window sets it')
 
 // --- request/header: maxTokens sets maxOutputTokens, absent clears; no-op includes maxTokens ---
 const hdrMaxLog: SessionEvent[] = [
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 8192 } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 8192 } }, reason: 'initial' } },
   hdr(at('2026-08-17T12:00:10+08:00')),
 ]
 const hdrMax = foldBilling(hdrMaxLog, table)
@@ -113,8 +116,8 @@ assert.equal(hdrMax2.maxOutputTokens, 8192, 'header maxTokens sets maxOutputToke
 
 // --- no-op fast path: a header changing only maxTokens updates maxOutputTokens ---
 const noOpLog: SessionEvent[] = [
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 4096 } }, reason: 'initial' } },
-  { type: 'request/header', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 8192 } }, reason: 'change' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 4096 } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { header: { config: { provider: 'wpsai', model: 'deepseek/deepseek-v4-flash', maxTokens: 8192 } }, reason: 'change' } },
 ]
 assert.equal(foldBilling(noOpLog, table).maxOutputTokens, 8192, 'maxTokens-only header change still updates maxOutputTokens')
 
@@ -122,8 +125,8 @@ assert.equal(foldBilling(noOpLog, table).maxOutputTokens, 8192, 'maxTokens-only 
 // 60 turns × 2 requests each (a turn with tool-calling steps has >1 request).
 const manyLog: SessionEvent[] = [hdr(at('2026-08-17T12:00:00+08:00'))]
 for (let i = 1; i <= 60; i += 1) {
-  manyLog.push({ type: 'assistant/message', seq: i * 2 - 1, time: at('2026-08-17T12:00:00+08:00') + i * 10, data: { turn: i, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } }, surfaceOp: 'append' })
-  manyLog.push({ type: 'assistant/message', seq: i * 2, time: at('2026-08-17T12:00:00+08:00') + i * 10 + 1, data: { turn: i, step: 2, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 0 } }, surfaceOp: 'append' })
+  manyLog.push({ type: 'assistant/message', seq: SQ(i * 2 - 1), time: at('2026-08-17T12:00:00+08:00') + i * 10, data: { turn: i, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } }, surfaceOp: 'append' })
+  manyLog.push({ type: 'assistant/message', seq: SQ(i * 2), time: at('2026-08-17T12:00:00+08:00') + i * 10 + 1, data: { turn: i, step: 2, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 0 } }, surfaceOp: 'append' })
 }
 assert.equal(foldBilling(manyLog, table).turns.length, 120, 'raw fold keeps full history (60 turns × 2 requests)')
 const bounded = foldBillingBounded(manyLog, table)
@@ -149,7 +152,7 @@ console.log('INVARIANT CHECK PASSED')
 
 // --- compaction/summary fold: count + last facts ---
 const compactionEvent = {
-  type: 'compaction/summary', seq: 9, time: at('2026-08-17T23:30:00+08:00'),
+  type: 'compaction/summary', seq: SQ(9), time: at('2026-08-17T23:30:00+08:00'),
   data: {
     compactionId: 'c-1',
     summary: [],
@@ -170,7 +173,7 @@ assert.equal(foldBilling(log, table).compactions.count, 0, 'no compaction events
 //     the session totals AND attributed on compactions (its tokens stay out
 //     of the conversation buckets so the hit rate is not diluted) ---
 const compactionWithUsage = {
-  type: 'compaction/summary', seq: 9, time: at('2026-08-17T23:30:00+08:00'),
+  type: 'compaction/summary', seq: SQ(9), time: at('2026-08-17T23:30:00+08:00'),
   data: {
     compactionId: 'c-1',
     summary: [],
@@ -249,7 +252,7 @@ console.log('COMPACTION ETA CHECK PASSED')
 // --- assistant/message WITHOUT usage → not in turns, not in totals ---
 const noUsageLog: SessionEvent[] = [
   hdr(at('2026-08-17T12:00:00+08:00')),
-  { type: 'assistant/message', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash') }, surfaceOp: 'append' },
+  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash') }, surfaceOp: 'append' },
   msg(2, at('2026-08-17T12:00:10+08:00'), 10, 5, 0),
 ]
 const noUsage = foldBilling(noUsageLog, table)
@@ -261,7 +264,7 @@ assert.equal(noUsage.lastRequestInputTokens, 10, 'lastRequestInputTokens from th
 
 // --- unregistered model → unpricedRequestCount, no cost ---
 const unregLog: SessionEvent[] = [
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'no/such-model' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'no/such-model' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
 ]
 const unreg = foldBilling(unregLog, table)
@@ -299,7 +302,7 @@ const multiTable: PriceTable = {
   ],
 }
 const multiLog: SessionEvent[] = [
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'google', model: 'gemini-x' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'google', model: 'gemini-x' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 1000, 100, 0),
 ]
 const multi = foldBilling(multiLog, multiTable)
@@ -324,12 +327,12 @@ const cwTable: PriceTable = {
   models: [{ provider: 'wpsai', model: 'cw-model', input: cnyPerMillion(10), output: cnyPerMillion(30), cacheInput: cnyPerMillion(1), cacheWrite: cnyPerMillion(12.5) }],
 }
 const cwHeader: SessionEvent<'request/header'> = {
-  type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'),
+  type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'),
   data: { header: { config: { provider: 'wpsai', model: 'cw-model' } }, reason: 'initial' },
 }
 // Fold over the event with cacheWrite usage; expect cacheWrite priced at its own rate.
 const cwEvent: SessionEvent<'assistant/message'> = {
-  type: 'assistant/message', seq: 1, time: at('2026-08-17T12:00:05+08:00'),
+  type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'),
   data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'cw-model'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 200 } },
   surfaceOp: 'append',
 }
@@ -360,19 +363,19 @@ const tierTable: PriceTable = {
   }],
 }
 const tierShort = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 31_000, 500, 0),
 ], tierTable)
 assert.equal(tierShort.cost['CNY'], priceTokens(31_000, cnyPerMillion(6)) + priceTokens(500, cnyPerMillion(24)),
   '31K input → tier 1 (0,32K)')
 const tierLong = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 40_000, 500, 0),
 ], tierTable)
 assert.equal(tierLong.cost['CNY'], priceTokens(40_000, cnyPerMillion(8)) + priceTokens(500, cnyPerMillion(28)),
   '40K input → tier 2 (32K+)')
 const tierBoundary = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 32_000, 500, 0),
 ], tierTable)
 assert.equal(tierBoundary.cost['CNY'], priceTokens(32_000, cnyPerMillion(8)) + priceTokens(500, cnyPerMillion(28)),
@@ -399,25 +402,25 @@ const tier47Table: PriceTable = {
   }],
 }
 const tier47Short = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 10_000, 100, 0),
 ], tier47Table)
 assert.equal(tier47Short.cost['CNY'], priceTokens(10_000, cnyPerMillion(2)) + priceTokens(100, cnyPerMillion(8)),
   '10K in + 100 out → tier 1')
 const tier47Long = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 10_000, 250, 0),
 ], tier47Table)
 assert.equal(tier47Long.cost['CNY'], priceTokens(10_000, cnyPerMillion(3)) + priceTokens(250, cnyPerMillion(14)),
   '10K in + 250 out → tier 2')
 const tier47Big = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 50_000, 10_000, 0),
 ], tier47Table)
 assert.equal(tier47Big.cost['CNY'], priceTokens(50_000, cnyPerMillion(4)) + priceTokens(10_000, cnyPerMillion(16)),
   '50K in → tier 3 (input 32K..200K), output ignored')
 const tier47Out200 = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-4.7' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 10_000, 200, 0),
 ], tier47Table)
 assert.equal(tier47Out200.cost['CNY'], priceTokens(10_000, cnyPerMillion(3)) + priceTokens(200, cnyPerMillion(14)),
@@ -425,8 +428,8 @@ assert.equal(tier47Out200.cost['CNY'], priceTokens(10_000, cnyPerMillion(3)) + p
 
 // --- cache write counted into total input for tier matching ---
 const tierCw = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
-  { type: 'assistant/message', seq: 1, time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('zai', 'glm-5.1'), usage: { inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 30_000 } }, surfaceOp: 'append' },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
+  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('zai', 'glm-5.1'), usage: { inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 30_000 } }, surfaceOp: 'append' },
 ], tierTable)
 assert.equal(tierCw.cost['CNY'], priceTokens(10_000, cnyPerMillion(8)) + priceTokens(30_000, 0) + priceTokens(100, cnyPerMillion(28)),
   'cache write 30K pushes total input to 40K → tier 2, cacheWrite at 0')
@@ -589,7 +592,7 @@ const effortPeakTable: PriceTable = {
   ],
 }
 const effortPeakLog: SessionEvent[] = [
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'm', reasoningEffort: 'high' as never } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'm', reasoningEffort: 'high' as never } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
 ]
 const effortPeak = foldBilling(effortPeakLog, effortPeakTable)
@@ -598,7 +601,7 @@ assert.deepEqual(effortPeak.peakModels, ['wpsai/m/high'], 'peak key carries the 
 // An effort-less request against the same table matches the generic row (no
 // periods) and must not contribute a peak key.
 const effortlessPeak = foldBilling([
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'm' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'wpsai', model: 'm' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
 ], effortPeakTable)
 assert.equal(effortlessPeak.hasPeakConfig, false, 'generic row has no periods')
@@ -693,10 +696,10 @@ const tzTable: PriceTable = {
 }
 // 2026-08-17T01:30Z: 09:30 Mon in Shanghai, 20:30 Sun in New York.
 const tzLog: SessionEvent[] = [
-  { type: 'request/header', seq: 0, time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'deepseekOfficial', model: 'm' } }, reason: 'initial' } },
-  { type: 'assistant/message', seq: 1, time: at('2026-08-17T01:30:00Z'), data: { turn: 1, step: 1, message: assistantMessage('deepseekOfficial', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
-  { type: 'request/header', seq: 2, time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'nyc', model: 'm' } }, reason: 'change' } },
-  { type: 'assistant/message', seq: 3, time: at('2026-08-17T01:30:00Z'), data: { turn: 2, step: 1, message: assistantMessage('nyc', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'deepseekOfficial', model: 'm' } }, reason: 'initial' } },
+  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T01:30:00Z'), data: { turn: 1, step: 1, message: assistantMessage('deepseekOfficial', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
+  { type: 'request/header', seq: SQ(2), time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'nyc', model: 'm' } }, reason: 'change' } },
+  { type: 'assistant/message', seq: SQ(3), time: at('2026-08-17T01:30:00Z'), data: { turn: 2, step: 1, message: assistantMessage('nyc', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
 ]
 const tzStats = foldBilling(tzLog, tzTable)
 assert.equal(tzStats.turns[0]!.period, 'peak', 'Shanghai request is peak (09:30 Mon)')
@@ -722,7 +725,7 @@ console.log('FENCE CHECK PASSED')
 
 // --- unpriced request keeps the provider's currency (not hardcoded CNY) ---
 const unpricedCurrencyLog: SessionEvent[] = [
-  { type: 'request/header', seq: 0, time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'google', model: 'gemini-unknown' } }, reason: 'initial' } },
+  { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'google', model: 'gemini-unknown' } }, reason: 'initial' } },
   msg(1, at('2026-08-17T12:00:05+08:00'), 100, 50, 0),
 ]
 const unpricedCurrency = foldBilling(unpricedCurrencyLog, multiTable)
@@ -754,3 +757,86 @@ assert.equal(truncatedMap.has(3), false, 'earliest turn of a truncated frame sta
 assert.equal(truncatedMap.get(4), 5_000, 'later turns keep snapshot deltas')
 
 console.log('TURN GROWTH MAP CHECK PASSED')
+
+// --- subagent pure fold: discovery, activity judging, aggregation ---
+import { discoverSubagentNodes, isDescendantHeader, hasOpenTurn, aggregateSubagentStats } from '../src/host/subagent-pure.ts'
+import type { SessionHeader } from '@deepseek-ai/dsh-session'
+
+const ts = (ms: number) => ms
+const hdrMeta = (id: string, extra: Partial<SessionHeader> = {}): SessionHeader => ({
+  version: 0, id: id as SessionHeader['id'], createdAt: 1000 + id.length, isSeeded: false,
+  ...extra,
+})
+
+// Activity judging: last turn boundary decides; other events are ignored.
+assert.equal(hasOpenTurn([]), false, 'empty log → not running')
+assert.equal(hasOpenTurn([{ type: 'turn/start', seq: SQ(0), time: ts(1), data: { turn: 1 } }] as never), true, 'trailing turn/start → running')
+assert.equal(hasOpenTurn([
+  { type: 'turn/start', seq: SQ(0), time: ts(1), data: { turn: 1 } },
+  { type: 'turn/end', seq: SQ(1), time: ts(2), data: { turn: 1, reason: { kind: 'completed' } } },
+] as never), false, 'closed turn → inactive')
+assert.equal(hasOpenTurn([
+  { type: 'assistant/message', seq: SQ(0), time: ts(1), data: { turn: 1, step: 1, message: assistantMessage('p', 'm') }, surfaceOp: 'append' },
+] as never), false, 'no boundary at all → not running')
+
+// Discovery: pre-order, depth by BILLABLE hops (ordinary/fork nodes add none),
+// fork cycles terminate via the visited set.
+const corpus = new Map<string, { header: SessionHeader }>([
+  ['root', { header: hdrMeta('root') }],
+  // direct child A (subagent)
+  ['a', { header: hdrMeta('a', { origin: 'subagent', parentSession: 'root' as unknown as SessionHeader['parentSession'], delegationDepth: 1 }) }],
+  // ordinary session parented to A (fork branch — must NOT deepen the tree)
+  ['f', { header: hdrMeta('f', { parentSession: 'a' as unknown as SessionHeader['parentSession'] }) }],
+  // grandchild under the ordinary node — still found, billed depth 2
+  ['g', { header: hdrMeta('g', { origin: 'subagent', parentSession: 'f' as unknown as SessionHeader['parentSession'], delegationDepth: 3 }) }],
+  // direct child B without children
+  ['b', { header: hdrMeta('b', { origin: 'subagent', parentSession: 'root' as unknown as SessionHeader['parentSession'], delegationDepth: 1 }) }],
+  // an origin-marked child WITHOUT a parentSession → not billable
+  ['x', { header: hdrMeta('x', { origin: 'subagent' }) }],
+  // a cycle hanging off B
+  ['c1', { header: hdrMeta('c1', { origin: 'subagent', parentSession: 'b' as unknown as SessionHeader['parentSession'] }) }],
+  ['c2', { header: hdrMeta('c2', { origin: 'subagent', parentSession: 'c1' as unknown as SessionHeader['parentSession'] }) }],
+])
+// c2's parent chain loops back through c1 only once; make an actual cycle:
+corpus.set('c2', { header: hdrMeta('c2', { origin: 'subagent', parentSession: 'a' as unknown as SessionHeader['parentSession'] }) })
+
+const nodes = discoverSubagentNodes(corpus, 'root')
+// Pre-order: a (child c2 + ordinary branch f→g), then b (child c1); depths
+// count BILLABLE hops only (grandchild under ordinary node g stays depth 2).
+assert.deepEqual(nodes.map(n => `${n.id}:${n.depth}:${n.hasChildren}`), ['a:1:true', 'g:2:false', 'c2:2:false', 'b:1:true', 'c1:2:false'], 'pre-order with billable depths and leaf flags')
+assert.equal(isDescendantHeader(hdrMeta('plain')), false, 'ordinary session is not a descendant')
+assert.equal(isDescendantHeader(hdrMeta('y', { origin: 'subagent' })), false, 'origin alone is not enough (parent required)')
+assert.deepEqual(discoverSubagentNodes(corpus, 'unknown-root'), [], 'unknown root discovers nothing')
+
+// Aggregation: totals cover all rows; currency buckets merge; truncation caps
+// the row list at SUBAGENT_ROWS_CAP while totals stay whole.
+const row = (over: Partial<SubagentsBillingStats['children'][number]>): SubagentsBillingStats['children'][number] => ({
+  sessionId: 's', depth: 1, hasChildren: false, activity: 'inactive',
+  requestCount: 1, unpricedRequestCount: 0, inputTokens: 100, outputTokens: 10,
+  cost: {}, ...over,
+})
+const subAgg = aggregateSubagentStats([
+  row({ sessionId: 'a', requestCount: 2, unpricedRequestCount: 1, inputTokens: 300, outputTokens: 30, cost: { CNY: 150 } }),
+  row({ sessionId: 'g', depth: 2, activity: 'running', inputTokens: 50, cost: { CNY: 25, USD: 5 } }),
+], { truncated: false, pendingCount: 0 })
+assert.equal(subAgg.totalCount, 2)
+assert.equal(subAgg.directCount, 1, 'only depth-1 rows count as direct')
+assert.equal(subAgg.runningCount, 1)
+assert.equal(subAgg.requestCount, 3)
+assert.equal(subAgg.unpricedRequestCount, 1)
+assert.equal(subAgg.inputTokens, 350)
+assert.equal(subAgg.outputTokens, 40, '30 (explicit) + 10 (row default)')
+assert.equal(subAgg.cost['CNY'], 175, 'CNY merges across children')
+assert.equal(subAgg.cost['USD'], 5)
+assert.equal(subAgg.truncated, false)
+assert.deepEqual(subAgg.billedCount, { CNY: 2, USD: 1 }, 'billed counts over the full walk feed average-cost math')
+
+const manyRows = Array.from({ length: 130 }, (_, i) => row({ sessionId: `r${i}`, cost: { CNY: 1 } }))
+const bigAgg = aggregateSubagentStats(manyRows, { truncated: false })
+assert.equal(bigAgg.totalCount, 130, 'totals cover every discovered row')
+assert.equal(bigAgg.children.length, 100, 'row list capped at SUBAGENT_ROWS_CAP')
+assert.equal(bigAgg.truncated, true)
+assert.equal(bigAgg.cost['CNY'], 130, 'totals still describe the FULL walk despite the cut')
+assert.equal(bigAgg.billedCount!['CNY'], 130, 'average denominator unaffected by the row cut')
+
+console.log('SUBAGENT BILLING CHECK PASSED')

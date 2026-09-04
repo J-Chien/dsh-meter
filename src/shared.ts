@@ -476,9 +476,11 @@ export interface SessionBillingStats {
   /**
    * The most recent request's model config (provider/model + optional
    * reasoning effort). Drives the card's model line and the "locate this
-   * model in settings" jump. Undefined until the first request/header event.
+   * model in settings" jump. Absent until the first request/header event —
+   * the wire view must stay lossless JSON, so the key is omitted rather than
+   * carried as an explicit `undefined`.
    */
-  currentModel: { provider: string; model: string; reasoningEffort?: string } | undefined
+  currentModel?: { provider: string; model: string; reasoningEffort?: string }
   /**
    * "provider/model[/effort]" keys of the models this session used that
    * configure peak windows. A reasoning-effort-specific price row adds its
@@ -518,6 +520,83 @@ export interface SessionBillingStats {
  */
 export const PRICE_PRECISION = 100_000
 
+/* ── Subagent billing (on-demand route, not the projection) ──────────────
+ *
+ *  A subagent is its own session in the harness store/persistence (header
+ *  `origin: 'subagent'` + `parentSession`), so its usage never appears in
+ *  the parent's log and the parent's `billing` projection cannot see it.
+ *  `/billing/api/subagents` therefore folds each descendant's own log on
+ *  demand with the SAME fold + price table as the parent. These wire shapes
+ *  stay here next to the cost types so both halves share one vocabulary;
+ *  there is no derived average in the wire — averages are client arithmetic
+ *  over `children`/totals, avoiding a second place to drift.
+ */
+
+/** Billing summary folded from one subagent session's own log. */
+export interface SubagentBillingRow {
+  /** The child session id (opaque; shown truncated when no label exists). */
+  sessionId: string
+  /**
+   * Durable creation label from the child's `subagent/descriptor`
+   * (`subagent/descriptor.label`). One-shot children may omit it — the card
+   * falls back to a short id.
+   */
+  label?: string
+  /** Root-relative delegation depth: direct children = 1, grandchildren = 2 … */
+  depth: number
+  /** Whether this child has any `origin: 'subagent'` descendant of its own. */
+  hasChildren: boolean
+  /** Running = live child whose log tail holds an unclosed turn. */
+  activity: 'running' | 'inactive' | 'cold'
+  /** Priced request count (same口径 as SessionBillingStats.requestCount). */
+  requestCount: number
+  /** Unpriced request count; also true-bills the card's 「未登记」 tag. */
+  unpricedRequestCount: number
+  /** Total input across priced AND unpriced requests: miss + hit + write. */
+  inputTokens: number
+  outputTokens: number
+  /** Total cost per currency (PRICE_PRECISION units); compaction included. */
+  cost: Record<string, number>
+}
+
+/** Aggregate over one root session's entire subagent tree. All totals are
+ *  independent of the parent's own SessionBillingStats — combine on display
+ *  if you want a family bill, never inside the fold. */
+export interface SubagentsBillingStats {
+  /** Direct children only (depth 1). */
+  directCount: number
+  /** Every origin-subagent descendant, all depths. */
+  totalCount: number
+  runningCount: number
+  requestCount: number
+  unpricedRequestCount: number
+  inputTokens: number
+  outputTokens: number
+  /** Summed child costs per currency (PRICE_PRECISION units); covers ALL
+   *  discovered children even when `children` is truncated. */
+  cost: Record<string, number>
+  /**
+   * Per-currency count of children actually BILLED in that currency
+   * (cost > 0), over the FULL walk — the average-cost denominator. Lives on
+   * the wire because the truncated `children` list cannot supply it.
+   */
+  billedCount?: Record<string, number>
+  /** Pre-order rows (parents before children), capped at SUBAGENT_ROWS_CAP
+   *  with truncation flagged by `truncated`. Unreachable/deep-unreadable
+   *  children are omitted rather than guessed. Newest-first by header
+   *  createdAt (the cap keeps the MOST RECENT rows). */
+  children: SubagentBillingRow[]
+  /** True when `children` was cut to the cap (totals still cover ALL
+   *  descendants — they come from the full walk). */
+  truncated: boolean
+  /** Number of children whose stats are not folded YET (bounded cold-read
+   *  budget per request): polls drain the backlog incrementally. */
+  pendingCount?: number
+}
+
+/** Maximum per-child rows carried by one /billing/api/subagents response. */
+export const SUBAGENT_ROWS_CAP = 100
+
 /** Convert price units to a display string with 2 decimal places. */
 export function formatPrice(priceUnits: number, symbol: string): string {
   const value = priceUnits / PRICE_PRECISION
@@ -539,7 +618,6 @@ export const EMPTY_STATS: SessionBillingStats = (() => {
     unpricedRequestCount: 0,
     hasPeakConfig: false,
     peakModels: [],
-    currentModel: undefined,
     cost: {},
     byPeriod: {},
     turns: [],

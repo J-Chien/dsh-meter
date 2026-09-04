@@ -16,20 +16,20 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { HostContext } from './context-types.ts'
 import type { SessionBillingStats, PriceTable, ModelPrice, ModelCapability, TurnCost } from '../shared.ts'
 import { PRICING_NAMESPACE, RECENT_TURNS_CAP } from '../shared.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from './session-stats.ts'
 import type { BillingFoldState } from './session-stats.ts'
+import { subagentsForSession, setSubagentTableSource } from './subagent-stats.ts'
 import { DEFAULT_TABLE } from './default-prices.ts'
 import { BillingRouteError, readJsonBody, writeError, writeOk } from './wire.ts'
 import { billingFence } from './fence.ts'
 // Host-side `billing` key merge into SessionProjectionStateMap (type-only).
 import type {} from './projection-types.ts'
 
-/** The settings namespace for this plugin. */
-export const PRICING_NS = settingsNamespace(PRICING_NAMESPACE)
+/** The settings namespace for this plugin (plain lowercase id since dsh 0.1.2-rc.1). */
+export const PRICING_NS = PRICING_NAMESPACE
 
 /** Schemastery schema for the price table (per-provider currency + model rows). */
 const tierSchema = z.object({
@@ -127,7 +127,7 @@ export function apply(ctx: HostContext): void {
 
   // Settings namespace: built-in table as the composition `base`; users
   // override via the settings page (through our own fenced routes).
-  const scope = ctx.settings.register<PriceTable>(PRICING_NS, priceTableSchema, {
+  const scope = ctx.settings.register<typeof PRICING_NS, PriceTable>(PRICING_NS, priceTableSchema, {
     base: DEFAULT_TABLE,
     applies: 'live',
   })
@@ -224,14 +224,15 @@ export function apply(ctx: HostContext): void {
         viewSchema: statsSchema as unknown as zod.ZodType<SessionBillingStats>,
         view: state => state.stats,
       },
-      init: () => ({ config: undefined, stats: EMPTY_STATS }),
+      init: () => ({ stats: EMPTY_STATS }),
       // The fold keeps full history; bound turns by TURN here so every pushed
       // frame stays at RECENT_TURNS_CAP turns (bounded projection size) while
       // keeping a turn's tool-calling steps together.
       apply: (state, event) => {
         const next = foldEvent(state, event, holder.table)
         if (next.stats.turns.length > RECENT_TURNS_CAP) {
-          return { config: next.config, stats: { ...next.stats, turns: boundTurns(next.stats.turns) } }
+          // Same lossless-JSON rule as the fold: no explicit undefined key.
+          return { ...(next.config === undefined ? {} : { config: next.config }), stats: { ...next.stats, turns: boundTurns(next.stats.turns) } }
         }
         return next
       },
@@ -256,6 +257,10 @@ export function apply(ctx: HostContext): void {
   })
 
   ctx.effect(() => scope.watch(() => mountProjection()), 'billing: price-table watcher')
+
+  // Background subagent warming prices with the SAME table the route serves
+  // (the holder updates on settings changes and refresh).
+  setSubagentTableSource(() => holder.table)
 
   // /billing/api routes: catalog, turns, refresh. Fenced to loopback
   // (DNS-rebinding defense); the client fetches these. The price table itself
@@ -286,6 +291,13 @@ export function apply(ctx: HostContext): void {
             break
           case 'turns':
             writeOk(res, turnsForSession(ctx, payload, holder.table))
+            break
+          case 'subagents':
+            writeOk(res, await subagentsForSession(
+              requireSessionId(payload),
+              { sessions: ctx.sessions, persistence: ctx.get('sessionPersistence') },
+              holder.table,
+            ))
             break
           case 'refresh': {
             // Sync the table and fold only the requested session. The
@@ -348,6 +360,16 @@ async function catalog(ctx: HostContext): Promise<{
   return { providers: rows }
 }
 
+/** Validate a route body's sessionId (the wire string is an opaque branded
+ *  SessionId; the store validates it on lookup, unknown ids → undefined). */
+function requireSessionId(payload: unknown): string {
+  const body = payload as { sessionId?: unknown }
+  if (body === null || typeof body !== 'object' || typeof body.sessionId !== 'string') {
+    throw new BillingRouteError('bad-payload', 'missing "sessionId"', 400)
+  }
+  return body.sessionId
+}
+
 /**
  * Recompute one session's billing with the current price table, folding its
  * live event log on demand. The result is returned only to the CALLING
@@ -360,17 +382,11 @@ function refreshSession(
   payload: unknown,
   table: PriceTable,
 ): { ok: true; stats: SessionBillingStats } {
-  const body = payload as { sessionId?: unknown }
-  if (body === null || typeof body !== 'object' || typeof body.sessionId !== 'string') {
-    throw new BillingRouteError('bad-payload', 'missing "sessionId"', 400)
-  }
-  // The wire string is an opaque branded SessionId; the store validates it
-  // (unknown ids return undefined), so no local check is needed.
-  const session = ctx.sessions.get(body.sessionId as never)
+  const session = ctx.sessions.get(requireSessionId(payload) as never)
   if (session === undefined) {
     throw new BillingRouteError('not-found', 'unknown session', 404)
   }
-  return { ok: true, stats: foldBillingBounded(session.events, table) }
+  return { ok: true, stats: foldBillingBounded(session.snapshotEvents(), table) }
 }
 
 /** Return a session's FULL per-request consumption history (unbounded,
@@ -380,15 +396,11 @@ function turnsForSession(
   payload: unknown,
   table: PriceTable,
 ): { ok: true; turns: TurnCost[] } {
-  const body = payload as { sessionId?: unknown }
-  if (body === null || typeof body !== 'object' || typeof body.sessionId !== 'string') {
-    throw new BillingRouteError('bad-payload', 'missing "sessionId"', 400)
-  }
-  const session = ctx.sessions.get(body.sessionId as never)
+  const session = ctx.sessions.get(requireSessionId(payload) as never)
   if (session === undefined) {
     throw new BillingRouteError('not-found', 'unknown session', 404)
   }
-  return { ok: true, turns: foldBilling(session.events, table).turns }
+  return { ok: true, turns: foldBilling(session.snapshotEvents(), table).turns }
 }
 
 export const name = 'billing'
