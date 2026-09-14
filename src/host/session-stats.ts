@@ -57,10 +57,13 @@ function modelHasPeriods(table: PriceTable, provider: string, model: string, eff
 
 /**
  * The `peakModels` key for one priced request. Provider ids contain no '/',
- * and the effort segment (when the request priced an effort-specific row)
- * carries the effort so the client can resolve the SAME row — effort rows
- * take precedence over the generic row, so a bare `provider/model` key would
- * let the client's peak tag look up the wrong (generic) row.
+ * and the REQUEST's reasoning effort (when present) is appended as the last
+ * segment — even when the request priced the effort-less GENERIC row, since
+ * `findPriceRow` falls back to it. Consumers resolve the key against the
+ * price table's known rows (`anyPeakActive`): the model segment may itself
+ * contain '/' (wpsai's vendor-prefixed ids), so the boundary is found by
+ * longest known model prefix, and `findPriceRow` is re-run so an
+ * effort-specific row wins over the generic row exactly as the fold priced.
  */
 function peakKey(provider: string, model: string, effort: string | undefined): string {
   return effort !== undefined ? `${provider}/${model}/${effort}` : `${provider}/${model}`

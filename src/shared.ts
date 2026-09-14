@@ -224,6 +224,56 @@ export function findPriceRow(
   return generic
 }
 
+/**
+ * Whether any peak window of the session's peak-configured models covers
+ * `timeMs` — the single-source test behind the client's 高峰/空闲 tag
+ * (host fold and browser tag can never drift apart).
+ *
+ * `peakModels` keys are the fold's `provider/model[/request-effort]` (see
+ * `peakKey` in the host fold). The effort segment is appended whenever the
+ * REQUEST carried a reasoning effort — even when that request priced the
+ * effort-less GENERIC row (`findPriceRow` falls back to it) — and model ids
+ * may THEMSELVES contain '/' (wpsai's vendor-prefixed ids). A key therefore
+ * cannot be re-split unambiguously: the model boundary is found by matching
+ * the LONGEST known model id that prefixes the key's remainder, the leftover
+ * is the request effort, and the row is resolved with `findPriceRow` so an
+ * effort-specific row wins over the generic row exactly as the fold priced.
+ * Returns false while the table is unavailable.
+ */
+export function anyPeakActive(
+  peakModels: readonly string[],
+  table: PriceTable | undefined,
+  timeMs: number,
+): boolean {
+  if (table === undefined) return false
+  for (const key of peakModels) {
+    const slash = key.indexOf('/')
+    if (slash <= 0) continue
+    const provider = key.slice(0, slash)
+    const rest = key.slice(slash + 1)
+    // Longest known model id that is the key's model segment (equal, or a
+    // prefix followed by '/'); the leftover is the request's effort.
+    let model: string | undefined
+    let bestLen = -1
+    for (const row of table.models) {
+      if (row.provider !== provider) continue
+      const m = row.model
+      if (m.length <= bestLen) continue
+      if (rest === m || rest.startsWith(`${m}/`)) {
+        model = m
+        bestLen = m.length
+      }
+    }
+    if (model === undefined) continue
+    const effort = rest.length > model.length ? rest.slice(model.length + 1) : undefined
+    const row = findPriceRow(table, provider, model, effort)
+    if (row?.periods === undefined || row.periods.length === 0) continue
+    const timezone = table.providers[provider]?.timezone
+    if (row.periods.some(p => inPeakWindow(p, timeMs, timezone))) return true
+  }
+  return false
+}
+
 /** One priced request's cost breakdown, folded from one `assistant/message`.
  *  Drives the per-turn consumption chart/detail. All token counts are the
  *  durable usage values; cost is in PRICE_PRECISION units. */
@@ -482,12 +532,15 @@ export interface SessionBillingStats {
    */
   currentModel?: { provider: string; model: string; reasoningEffort?: string }
   /**
-   * "provider/model[/effort]" keys of the models this session used that
-   * configure peak windows. A reasoning-effort-specific price row adds its
-   * effort as a third slash segment so the client can look up the SAME row
-   * the host fold priced with (effort rows win over the generic row — see
-   * `findPriceRow`). The client pairs these with the price table (and a
-   * timer) to show a "currently in peak" tag without host round-trips.
+   * "provider/model[/request-effort]" keys of the models this session used
+   * that configure peak windows. The effort segment is appended whenever the
+   * REQUEST carried a reasoning effort — even when the request priced the
+   * effort-less generic row (`findPriceRow` falls back to it). Model ids may
+   * themselves contain '/' (wpsai's vendor-prefixed ids), so consumers must
+   * resolve a key against the price table's known rows (`anyPeakActive`)
+   * rather than re-split it. The client pairs these with the price table
+   * (and a timer) to show a "currently in peak" tag without host
+   * round-trips.
    */
   peakModels: string[]
   /**

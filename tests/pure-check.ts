@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
-import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow } from '../src/shared.ts'
+import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow, anyPeakActive } from '../src/shared.ts'
 import type { PriceTable, TurnCost } from '../src/shared.ts'
 import type { SubagentsBillingStats } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
@@ -33,6 +33,83 @@ assert.equal(inPeakWindow(peak, at('2026-08-17T23:00:00+08:00')), true, '23:00 i
 assert.equal(inPeakWindow(peak, at('2026-08-17T05:00:00+08:00')), true, '05:00 in overnight window')
 assert.equal(inPeakWindow(peak, at('2026-08-17T12:00:00+08:00')), false, '12:00 outside')
 assert.equal(inPeakWindow(peak, at('2026-08-17T06:00:00+08:00')), false, '06:00 boundary excluded')
+
+// --- anyPeakActive: the client's 高峰/空闲 tag resolution ---
+// Regression: the fold's "provider/model[/request-effort]" keys cannot be
+// re-split when the MODEL id itself contains '/' (wpsai's vendor-prefixed
+// ids, e.g. "deepseek/deepseek-v4-flash-vision-exp") — the resolver must
+// find the model boundary against the table's known rows and re-run
+// findPriceRow so effort rows win and the effort-less generic row is the
+// fallback (exactly as the fold priced). Re-splitting the old way yielded
+// model="deepseek" + a bogus effort and the tag stuck on 「空闲」.
+const slashTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'wpsai', model: 'deepseek/deepseek-v4-flash-vision-exp', reasoningEffort: 'high',
+    input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02),
+    periods: [
+      { startHour: 14, endHour: 18, input: cnyPerMillion(1.5), output: cnyPerMillion(3), cacheInput: cnyPerMillion(0.03) },
+      { startHour: 22, endHour: 24, input: cnyPerMillion(1.5), output: cnyPerMillion(3), cacheInput: cnyPerMillion(0.03) },
+    ],
+  }],
+}
+// 2026-09-08 is a Tuesday (weekday 2, within the weekday mask when present).
+const tuePeak = Date.parse('2026-09-08T16:30:00+08:00')
+const tueOffPeak = Date.parse('2026-09-08T12:00:00+08:00')
+const tueNight = Date.parse('2026-09-08T23:00:00+08:00')
+const slashKey = 'wpsai/deepseek/deepseek-v4-flash-vision-exp/high'
+assert.equal(anyPeakActive([slashKey], slashTable, tuePeak), true, 'slashy model id + effort resolves to its row; 16:30 hits 14–18 peak')
+assert.equal(anyPeakActive([slashKey], slashTable, tueNight), true, '22–24 window also hits')
+assert.equal(anyPeakActive([slashKey], slashTable, tueOffPeak), false, '12:00 is outside both windows')
+// The generic (effortless) key must NOT match the effort row.
+assert.equal(anyPeakActive(['wpsai/deepseek/deepseek-v4-flash-vision-exp'], slashTable, tuePeak), false, 'effortless key does not match the effort row')
+assert.equal(anyPeakActive([], slashTable, tuePeak), false, 'empty peak set')
+assert.equal(anyPeakActive([slashKey], undefined, tuePeak), false, 'table not loaded yet → no tag')
+// A row WITHOUT periods never matches, and a key for an unknown row is inert.
+assert.equal(anyPeakActive([slashKey], {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{ provider: 'wpsai', model: 'deepseek/deepseek-v4-flash-vision-exp', reasoningEffort: 'high', input: 1, output: 1, cacheInput: 0 }],
+}, tuePeak), false, 'no periods on the row → no peak')
+
+// The USER's exact case: the price row is GENERIC (no reasoningEffort field)
+// but the fold appends the REQUEST's effort — the key carries "/high" and
+// must still resolve to the generic row (findPriceRow's fallback).
+const genericTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [{
+    provider: 'wpsai', model: 'deepseek/deepseek-v4-flash-vision-exp',
+    input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02),
+    periods: [
+      { startHour: 14, endHour: 18, input: cnyPerMillion(1.5), output: cnyPerMillion(3), cacheInput: cnyPerMillion(0.03) },
+      { startHour: 22, endHour: 24, input: cnyPerMillion(1.5), output: cnyPerMillion(3), cacheInput: cnyPerMillion(0.03) },
+    ],
+  }],
+}
+assert.equal(anyPeakActive([slashKey], genericTable, tuePeak), true, 'request-effort key falls back to the GENERIC row; 16:30 hits peak')
+assert.equal(anyPeakActive([slashKey], genericTable, tueNight), true, '22–24 window also hits via the generic row')
+assert.equal(anyPeakActive([slashKey], genericTable, tueOffPeak), false, '12:00 still outside')
+assert.equal(anyPeakActive(['wpsai/deepseek/deepseek-v4-flash-vision-exp'], genericTable, tuePeak), true, 'effortless key matches the generic row directly')
+
+// Effort-row precedence: with BOTH a generic and an effort row, the
+// request-effort key resolves the EFFORT row (its windows win).
+const mixedTable: PriceTable = {
+  providers: { wpsai: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [
+    {
+      provider: 'wpsai', model: 'deepseek/deepseek-v4-flash-vision-exp',
+      input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02),
+      periods: [{ startHour: 22, endHour: 24, input: cnyPerMillion(1.5), output: cnyPerMillion(3), cacheInput: cnyPerMillion(0.03) }],
+    },
+    {
+      provider: 'wpsai', model: 'deepseek/deepseek-v4-flash-vision-exp', reasoningEffort: 'high',
+      input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02),
+      periods: [{ startHour: 14, endHour: 18, input: cnyPerMillion(1.5), output: cnyPerMillion(3), cacheInput: cnyPerMillion(0.03) }],
+    },
+  ],
+}
+assert.equal(anyPeakActive([slashKey], mixedTable, tuePeak), true, '16:30 hits the effort row peak')
+assert.equal(anyPeakActive([slashKey], mixedTable, tueNight), false, '23:00 the effort row is OFF even though the generic row window is open (effort row wins)')
+
 
 // --- fold over a realistic log with a peak period ---
 const table: PriceTable = {

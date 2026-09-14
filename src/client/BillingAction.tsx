@@ -12,7 +12,7 @@ import {
   IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, findPriceRow, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, inPeakWindow, aggregateTurns, type PriceTable, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
+import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, anyPeakActive, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, aggregateTurns, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { formatPrice, formatTime, formatTokens } from './format.ts'
 import { refreshSessionStats, getSubagentsStats } from './billing-api.ts'
 import { usePricingTable } from './pricing-scope.ts'
@@ -37,35 +37,6 @@ export interface BillingActionInjected {
 /** Full props for the session-header billing action. */
 export type BillingActionProps =
   PropsRuntime<'conversation.session.header.actions'> & BillingActionInjected
-
-/**
- * Whether any peak window of the session's peak-configured models covers
- * `timeMs`. Peak keys are "provider/model" or "provider/model/effort" (an
- * effort-specific price row; provider ids and efforts are slash-free in
- * practice), so the effort is carried in the third segment and used to look
- * up the SAME row the host fold priced with — effort rows take precedence
- * over the generic row (`findPriceRow`). Returns false until the table
- * arrives.
- */
-function inPeakNow(peakModels: readonly string[], table: PriceTable | undefined, timeMs: number): boolean {
-  if (table === undefined) return false
-  // Callers tolerate frames from a host that has not restarted with the
-  // peakModels field yet (its schema strips the unknown key) by passing [].
-  for (const key of peakModels) {
-    const slash = key.indexOf('/')
-    if (slash <= 0) continue
-    const provider = key.slice(0, slash)
-    const rest = key.slice(slash + 1)
-    const slash2 = rest.indexOf('/')
-    const model = slash2 > 0 ? rest.slice(0, slash2) : rest
-    const effort = slash2 > 0 ? rest.slice(slash2 + 1) : undefined
-    const row = findPriceRow(table, provider, model, effort)
-    if (row?.periods === undefined) continue
-    const timezone = table.providers[provider]?.timezone
-    if (row.periods.some(p => inPeakWindow(p, timeMs, timezone))) return true
-  }
-  return false
-}
 
 /** Symbol for a currency code. */
 export function currencySymbol(code: string): string {
@@ -103,9 +74,12 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   // Re-evaluate the peak tag when the table lands or changes, when the
   // session's peak-model set changes (a settings save re-mounts the
   // projection), and once a minute so the tag flips at window boundaries
-  // without host round-trips.
+  // without host round-trips. `anyPeakActive` resolves the fold's
+  // "provider/model[/effort]" keys against the table's known rows — model
+  // ids may themselves contain '/' (wpsai's vendor-prefixed ids), so the
+  // keys are never re-split here.
   useEffect(() => {
-    const evaluate = (): void => setPeakNow(inPeakNow(peakModels, table, Date.now()))
+    const evaluate = (): void => setPeakNow(anyPeakActive(peakModels, table, Date.now()))
     evaluate()
     const timer = window.setInterval(evaluate, 60_000)
     return () => window.clearInterval(timer)
