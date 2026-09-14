@@ -274,6 +274,48 @@ export function anyPeakActive(
   return false
 }
 
+/**
+ * Order-insensitive structural equality for JSON-shaped values (what the
+ * settings RPC transports). Object keys compare as sets, arrays compare
+ * order-sensitively, and `undefined`-valued object keys are ignored on both
+ * sides — JSON.stringify drops them and the settings transport strips them.
+ *
+ * The settings read-back a client sees is redaction-walked into
+ * schema-declared key order (dsh-settings `redactSecrets`), so a byte-exact
+ * stringify comparison of a written payload against the read-back would
+ * misreport a SUCCESSFUL save as rejected whenever object key order differs —
+ * e.g. a peak period that gains `days` (a new window + day selection, or the
+ * official preset onto a days-less period) ends with `days` AFTER `tiers`
+ * while the read-back reorders it into schema position. Deep equality is the
+ * correct rejection detector: a genuinely rejected write (host validation /
+ * revision conflict) leaves the stored section untouched, so content differs.
+ */
+export function deepEqualJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== typeof b) return false
+  if (a === null || b === null) return false
+  if (typeof a !== 'object') return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a)) {
+    const arrA = a as readonly unknown[]
+    const arrB = b as readonly unknown[]
+    if (arrA.length !== arrB.length) return false
+    for (let i = 0; i < arrA.length; i++) {
+      if (!deepEqualJson(arrA[i], arrB[i])) return false
+    }
+    return true
+  }
+  const objA = a as Record<string, unknown>
+  const objB = b as Record<string, unknown>
+  const keysA = Object.keys(objA).filter(key => objA[key] !== undefined)
+  const keysB = Object.keys(objB).filter(key => objB[key] !== undefined)
+  if (keysA.length !== keysB.length) return false
+  for (const key of keysA) {
+    if (objB[key] === undefined || !deepEqualJson(objA[key], objB[key])) return false
+  }
+  return true
+}
+
 /** One priced request's cost breakdown, folded from one `assistant/message`.
  *  Drives the per-turn consumption chart/detail. All token counts are the
  *  durable usage values; cost is in PRICE_PRECISION units. */

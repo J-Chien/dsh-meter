@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
-import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow, anyPeakActive } from '../src/shared.ts'
+import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow, anyPeakActive, deepEqualJson } from '../src/shared.ts'
 import type { PriceTable, TurnCost } from '../src/shared.ts'
 import type { SubagentsBillingStats } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
@@ -915,5 +915,52 @@ assert.equal(bigAgg.children.length, 100, 'row list capped at SUBAGENT_ROWS_CAP'
 assert.equal(bigAgg.truncated, true)
 assert.equal(bigAgg.cost['CNY'], 130, 'totals still describe the FULL walk despite the cut')
 assert.equal(bigAgg.billedCount!['CNY'], 130, 'average denominator unaffected by the row cut')
+
+// ---- deepEqualJson: settings save round-trip (key-order-insensitive) ----
+// The settings read-back a client compares its written payload against is
+// redaction-walked into schema-declared key order. Byte-exact stringify
+// would misreport a successful save as rejected whenever object key order
+// differs — the peak-period `days`-after-`tiers` shape from the editor
+// (a new window + day selection) vs the schema-ordered read-back.
+const periodPayload = {
+  startHour: 22, endHour: 6,
+  input: 150000, output: 450000, cacheInput: 5000,
+  tiers: [], days: [1, 2, 3, 4, 5],
+}
+const periodReadback = {
+  startHour: 22, endHour: 6, days: [1, 2, 3, 4, 5],
+  input: 150000, output: 450000, cacheInput: 5000, tiers: [],
+}
+assert.equal(JSON.stringify(periodPayload) === JSON.stringify(periodReadback), false,
+  'sanity: the byte-exact stringify check is exactly what misreports this save')
+assert.equal(deepEqualJson(periodPayload, periodReadback), true,
+  'peak period key order must not fail the save round-trip')
+assert.equal(deepEqualJson(periodReadback, periodPayload), true, 'deep equality is symmetric')
+// undefined-valued payload keys equal an absent key (JSON.stringify drops them)
+assert.equal(deepEqualJson({ a: 1, cacheWrite: undefined }, { a: 1 }), true,
+  'undefined-valued keys are ignored on both sides')
+assert.equal(deepEqualJson({ cacheWrite: undefined }, {}), true)
+// real content differences (a genuinely rejected write) are still detected
+assert.equal(deepEqualJson({ ...periodPayload, input: 200000 }, periodReadback), false,
+  'a content difference still rejects the save')
+assert.equal(deepEqualJson(periodPayload, { ...periodReadback, tiers: [{ input: 1 }] }), false)
+// arrays are order-sensitive (JSON arrays), objects are not
+assert.equal(deepEqualJson([1, 2, 3], [3, 2, 1]), false, 'array order matters')
+assert.equal(deepEqualJson({ days: [1, 2, 3] }, { days: [1, 2, 3] }), true)
+// full-table shape: providers/models top-level fields compare by content
+const tableA = {
+  providers: { deepseek: { currency: 'CNY', currencySymbol: '¥' } },
+  models: [
+    { provider: 'deepseek', model: 'm', input: 1, output: 2, cacheInput: 0, periods: [{ startHour: 9, endHour: 12, days: [1], input: 3, output: 4, cacheInput: 0, tiers: [] }] },
+  ],
+}
+const tableB = {
+  models: [
+    { model: 'm', provider: 'deepseek', output: 2, cacheInput: 0, input: 1, periods: [{ endHour: 12, startHour: 9, input: 3, output: 4, cacheInput: 0, days: [1], tiers: [] }] },
+  ],
+  providers: { deepseek: { currencySymbol: '¥', currency: 'CNY' } },
+}
+assert.equal(deepEqualJson(tableA, tableB), true, 'whole-table round-trip with scrambled key order')
+assert.equal(deepEqualJson(tableA, { ...tableB, models: [] }), false, 'dropped models are detected')
 
 console.log('SUBAGENT BILLING CHECK PASSED')

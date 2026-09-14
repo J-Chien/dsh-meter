@@ -28,7 +28,7 @@ import { pricingScope, usePricingSnapshot } from './pricing-scope.ts'
 import { consumeLocateModel, LOCATE_EVENT, type LocateModelRequest } from './locate.ts'
 import { BillingLabel } from './BillingLabel.tsx'
 import { type BillingKey } from './locales.ts'
-import { DEFAULT_TIMEZONE, DEEPSEEK_OFFICIAL_PROVIDER, WEEKDAY_DAYS } from '../shared.ts'
+import { DEFAULT_TIMEZONE, DEEPSEEK_OFFICIAL_PROVIDER, WEEKDAY_DAYS, deepEqualJson } from '../shared.ts'
 import './theme.module.css'
 import css from './BillingSettings.module.css'
 
@@ -398,11 +398,16 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
       await scope.set('providers', providers)
       await scope.set('models', models)
       // A rejected write (host validation / revision conflict) silently
-      // re-reads instead of throwing — confirm via the raw user layer.
+      // re-reads instead of throwing — confirm via the raw user layer. The
+      // read-back is redaction-ordered into schema key order (dsh-settings
+      // redactSecrets), so compare by DEEP equality, not byte-exact
+      // stringify: a successful write whose key order differs from the
+      // schema (e.g. a peak period gaining `days` after `tiers`) would
+      // stringify differently and be falsely reported as rejected.
       const landed = scope.getSnapshot().user as Partial<PriceTable> | undefined
       if (landed === undefined
-        || JSON.stringify(landed.providers) !== JSON.stringify(providers)
-        || JSON.stringify(landed.models) !== JSON.stringify(models)) {
+        || !deepEqualJson(landed.providers, providers)
+        || !deepEqualJson(landed.models, models)) {
         throw new Error(t('settings.saveRejected'))
       }
       setDirty(false)
