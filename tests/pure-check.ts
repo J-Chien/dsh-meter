@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import type { SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 // Fixtures build events by hand; the real log stamps branded seqs.
 const SQ = (n: number): SessionSeq => n as SessionSeq
-import type {} from '@deepseek-ai/dsh-compaction'
+import type { CompactionId } from '@deepseek-ai/dsh-compaction'
 import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice } from '../src/host/price.ts'
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
@@ -130,9 +130,11 @@ const assistantMessage = (provider: string, model: string) => ({
   role: 'assistant' as const, content: [], id: 'm-1' as never,
   source: { kind: 'model' as const, provider, model },
 })
+// dsh ≥ 0.1.5-rc.1 (session V3): assistant/message carries the exact timed
+// model `stream`; the fold ignores it, so fixtures stub it empty.
 const msg = (seq: number, time: number, input: number, output: number, cacheRead: number): SessionEvent<'assistant/message'> => ({
   type: 'assistant/message', seq: SQ(seq), time,
-  data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead } },
+  data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), stream: [], usage: { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead } },
   surfaceOp: 'append',
 })
 
@@ -202,8 +204,8 @@ assert.equal(foldBilling(noOpLog, table).maxOutputTokens, 8192, 'maxTokens-only 
 // 60 turns × 2 requests each (a turn with tool-calling steps has >1 request).
 const manyLog: SessionEvent[] = [hdr(at('2026-08-17T12:00:00+08:00'))]
 for (let i = 1; i <= 60; i += 1) {
-  manyLog.push({ type: 'assistant/message', seq: SQ(i * 2 - 1), time: at('2026-08-17T12:00:00+08:00') + i * 10, data: { turn: i, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } }, surfaceOp: 'append' })
-  manyLog.push({ type: 'assistant/message', seq: SQ(i * 2), time: at('2026-08-17T12:00:00+08:00') + i * 10 + 1, data: { turn: i, step: 2, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 0 } }, surfaceOp: 'append' })
+  manyLog.push({ type: 'assistant/message', seq: SQ(i * 2 - 1), time: at('2026-08-17T12:00:00+08:00') + i * 10, data: { turn: i, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), stream: [], usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0 } }, surfaceOp: 'append' })
+  manyLog.push({ type: 'assistant/message', seq: SQ(i * 2), time: at('2026-08-17T12:00:00+08:00') + i * 10 + 1, data: { turn: i, step: 2, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), stream: [], usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 0 } }, surfaceOp: 'append' })
 }
 assert.equal(foldBilling(manyLog, table).turns.length, 120, 'raw fold keeps full history (60 turns × 2 requests)')
 const bounded = foldBillingBounded(manyLog, table)
@@ -228,13 +230,16 @@ assert.throws(() => assertEmptyBillingStats({ ...EMPTY_STATS, requestCount: 1 })
 console.log('INVARIANT CHECK PASSED')
 
 // --- compaction/summary fold: count + last facts ---
+// dsh ≥ 0.1.5-rc.1: the event data carries a branded CompactionId, SessionSeq
+// ranges, and a ContentBlock summary; the unmarked branch (no llmStreamCall)
+// covers a template/remote summarizer.
 const compactionEvent = {
   type: 'compaction/summary', seq: SQ(9), time: at('2026-08-17T23:30:00+08:00'),
   data: {
-    compactionId: 'c-1',
+    compactionId: 'c-1' as CompactionId,
     summary: [],
-    shadowedRange: { start: 1, end: 4 },
-    shadowedSeqs: [1, 2, 3, 4],
+    shadowedRange: { start: SQ(1), end: SQ(4) },
+    shadowedSeqs: [SQ(1), SQ(2), SQ(3), SQ(4)],
     shadowedTokenCount: 12_345,
     provider: 'wpsai',
     model: 'deepseek/deepseek-v4-flash',
@@ -252,10 +257,10 @@ assert.equal(foldBilling(log, table).compactions.count, 0, 'no compaction events
 const compactionWithUsage = {
   type: 'compaction/summary', seq: SQ(9), time: at('2026-08-17T23:30:00+08:00'),
   data: {
-    compactionId: 'c-1',
+    compactionId: 'c-1' as CompactionId,
     summary: [],
-    shadowedRange: { start: 1, end: 4 },
-    shadowedSeqs: [1, 2, 3, 4],
+    shadowedRange: { start: SQ(1), end: SQ(4) },
+    shadowedSeqs: [SQ(1), SQ(2), SQ(3), SQ(4)],
     shadowedTokenCount: 12_345,
     provider: 'wpsai',
     model: 'deepseek/deepseek-v4-flash',
@@ -329,7 +334,7 @@ console.log('COMPACTION ETA CHECK PASSED')
 // --- assistant/message WITHOUT usage → not in turns, not in totals ---
 const noUsageLog: SessionEvent[] = [
   hdr(at('2026-08-17T12:00:00+08:00')),
-  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash') }, surfaceOp: 'append' },
+  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'deepseek/deepseek-v4-flash'), stream: [] }, surfaceOp: 'append' },
   msg(2, at('2026-08-17T12:00:10+08:00'), 10, 5, 0),
 ]
 const noUsage = foldBilling(noUsageLog, table)
@@ -410,7 +415,7 @@ const cwHeader: SessionEvent<'request/header'> = {
 // Fold over the event with cacheWrite usage; expect cacheWrite priced at its own rate.
 const cwEvent: SessionEvent<'assistant/message'> = {
   type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'),
-  data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'cw-model'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 200 } },
+  data: { turn: 1, step: 1, message: assistantMessage('wpsai', 'cw-model'), stream: [], usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 200 } },
   surfaceOp: 'append',
 }
 const cwStats = foldBilling([cwHeader, cwEvent], cwTable)
@@ -506,7 +511,7 @@ assert.equal(tier47Out200.cost['CNY'], priceTokens(10_000, cnyPerMillion(3)) + p
 // --- cache write counted into total input for tier matching ---
 const tierCw = foldBilling([
   { type: 'request/header', seq: SQ(0), time: at('2026-08-17T12:00:00+08:00'), data: { header: { config: { provider: 'zai', model: 'glm-5.1' } }, reason: 'initial' } },
-  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('zai', 'glm-5.1'), usage: { inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 30_000 } }, surfaceOp: 'append' },
+  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T12:00:05+08:00'), data: { turn: 1, step: 1, message: assistantMessage('zai', 'glm-5.1'), stream: [], usage: { inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 30_000 } }, surfaceOp: 'append' },
 ], tierTable)
 assert.equal(tierCw.cost['CNY'], priceTokens(10_000, cnyPerMillion(8)) + priceTokens(30_000, 0) + priceTokens(100, cnyPerMillion(28)),
   'cache write 30K pushes total input to 40K → tier 2, cacheWrite at 0')
@@ -774,9 +779,9 @@ const tzTable: PriceTable = {
 // 2026-08-17T01:30Z: 09:30 Mon in Shanghai, 20:30 Sun in New York.
 const tzLog: SessionEvent[] = [
   { type: 'request/header', seq: SQ(0), time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'deepseekOfficial', model: 'm' } }, reason: 'initial' } },
-  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T01:30:00Z'), data: { turn: 1, step: 1, message: assistantMessage('deepseekOfficial', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
+  { type: 'assistant/message', seq: SQ(1), time: at('2026-08-17T01:30:00Z'), data: { turn: 1, step: 1, message: assistantMessage('deepseekOfficial', 'm'), stream: [], usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
   { type: 'request/header', seq: SQ(2), time: at('2026-08-17T01:30:00Z'), data: { header: { config: { provider: 'nyc', model: 'm' } }, reason: 'change' } },
-  { type: 'assistant/message', seq: SQ(3), time: at('2026-08-17T01:30:00Z'), data: { turn: 2, step: 1, message: assistantMessage('nyc', 'm'), usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
+  { type: 'assistant/message', seq: SQ(3), time: at('2026-08-17T01:30:00Z'), data: { turn: 2, step: 1, message: assistantMessage('nyc', 'm'), stream: [], usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0 } }, surfaceOp: 'append' },
 ]
 const tzStats = foldBilling(tzLog, tzTable)
 assert.equal(tzStats.turns[0]!.period, 'peak', 'Shanghai request is peak (09:30 Mon)')
@@ -841,7 +846,7 @@ import type { SessionHeader } from '@deepseek-ai/dsh-session'
 
 const ts = (ms: number) => ms
 const hdrMeta = (id: string, extra: Partial<SessionHeader> = {}): SessionHeader => ({
-  version: 0, id: id as SessionHeader['id'], createdAt: 1000 + id.length, isSeeded: false,
+  version: 3, id: id as SessionHeader['id'], createdAt: 1000 + id.length, isSeeded: false, // session format V3
   ...extra,
 })
 

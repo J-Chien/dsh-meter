@@ -89,6 +89,24 @@ function foldRow(node: {
   }
 }
 
+/** Read one stored session's FULL event log through the SessionHandle seam
+ *  (dsh ≥ 0.1.5-rc.1: `persistence.inspect` was removed; reads now open a
+ *  read handle and `read()` it, and the handle must be closed). Cancellation
+ *  is observed both at open and at read; close is always attempted. */
+async function readStoredEvents(
+  persistence: SessionPersistence,
+  id: string,
+  signal?: AbortSignal,
+): Promise<readonly SessionEvent[]> {
+  const handle = await persistence.open(id as never, 'read', { signal })
+  try {
+    const inspected = await handle.read(undefined, undefined, { signal })
+    return inspected.events
+  } finally {
+    await handle.close()
+  }
+}
+
 export { EMPTY_SUBAGENTS_STATS }
 
 /** FNV-1a fingerprint of the resolved price table, for cache invalidation. */
@@ -141,7 +159,9 @@ export async function subagentsForSession(
   const revisions = new Map<string, string>()
   if (sources.persistence !== undefined) {
     try {
-      for (const snap of await sources.persistence.listSnapshots(signal)) {
+      // dsh ≥ 0.1.5-rc.1: listSnapshots() became list() (sessions are now
+      // addressed through SessionHandles); the snapshot shape is unchanged.
+      for (const snap of await sources.persistence.list({ signal })) {
         corpus.set(snap.header.id, { header: snap.header })
         revisions.set(snap.header.id, String(snap.revision))
       }
@@ -211,13 +231,13 @@ export async function subagentsForSession(
       continue
     }
     try {
-      const inspected = await persistence.inspect(node.id as never, signal)
+      const events = await readStoredEvents(persistence, node.id, signal)
       const row = foldRow({
         id: node.id,
         depth: node.depth,
         hasChildren: node.hasChildren,
         activity: 'cold',
-        events: inspected.events,
+        events,
       }, table)
       cache.set(node.id, {
         watermark: revisions.get(node.id) ?? '',
@@ -291,21 +311,21 @@ function scheduleWarm(
       const revisions = new Map<string, string>()
       if (sources.persistence !== undefined) {
         try {
-          for (const snap of await sources.persistence.listSnapshots()) {
+          for (const snap of await sources.persistence.list()) {
             revisions.set(snap.header.id, String(snap.revision))
           }
-        } catch { /* the per-child inspect below still tries */ }
+        } catch { /* the per-child read below still tries */ }
       }
       for (const node of batch) {
         if (warmers.get(rootId) !== pending && pending.length !== 0) break // superseded
         try {
-          const inspected = await sources.persistence!.inspect(node.id as never)
+          const events = await readStoredEvents(sources.persistence!, node.id)
           const row = foldRow({
             id: node.id,
             depth: node.depth,
             hasChildren: node.hasChildren,
             activity: 'cold',
-            events: inspected.events,
+            events,
           }, table)
           cache.set(node.id, {
             watermark: revisions.get(node.id) ?? '',
