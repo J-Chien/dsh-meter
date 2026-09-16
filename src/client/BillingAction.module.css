@@ -1,7 +1,15 @@
 /* BillingAction: header badge + hover/click card.
    All tokens come from theme.module.css (`--billing-*`); this file never
    references `--dsw-*` directly. Interaction TIMING lives in
-   interaction.ts (HOVER_OPEN_MS / HOVER_CLOSE_MS / CLICK_DELAY_MS). */
+   interaction.ts (HOVER_OPEN_MS / HOVER_CLOSE_MS / CLICK_DELAY_MS).
+
+   The surface deliberately mirrors the official chat stat dialog
+   (`@deepseek-ai/dsh-client-ui-chat` → stat-dialog.module.css +
+   TurnUsagePanel.module.css): a 12px-radius menu panel with the prominent
+   elevation, a title row whose right value is the headline figure, a 0.5px
+   title rule, and one `dl` of tertiary-label / secondary-value pairs. Every
+   deviation below is an addition on top of that frame (cost rows, chart,
+   subagents, context meter) and reuses the same ladder. */
 
 .root {
   position: relative;
@@ -12,43 +20,57 @@
   display: inline-flex;
 }
 
+/* ── Trigger: the official stat pill ─────────────────────────────────────
+ * 28px tall (plus the content font delta), 28px-radius, 6px/8px padding,
+ * 4px gap, tertiary label at the secondary content size. Hover and the open
+ * state share the hover fill + secondary label, exactly like the official
+ * TurnUsagePanel trigger. */
 .trigger {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  min-height: 28px;
-  padding: 3px 6px;
+  gap: 4px;
+  min-width: 0;
+  height: calc(28px + var(--billing-font-delta));
+  padding: 6px 8px;
   border: 0;
-  border-radius: var(--billing-radius-1);
+  border-radius: var(--billing-radius-pill);
   background: transparent;
   color: var(--billing-text-tertiary);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--billing-font-size-secondary);
+  line-height: calc(24px + var(--billing-font-delta));
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .trigger:hover,
-.trigger:focus-visible {
+.trigger:focus-visible,
+.trigger[aria-expanded='true'] {
+  background: var(--billing-hover-bg);
   color: var(--billing-text-secondary);
 }
 
-.badge {
-  font-family: var(--billing-font-mono);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+.triggerIcon {
+  flex: none;
+  width: calc(15px + var(--billing-font-delta));
+  height: calc(15px + var(--billing-font-delta));
 }
 
-/* Header state tags beside the badge: rounded inline-code chips with a
- * muted per-state tint — 高峰 red, 空闲 gray, 未登记价格 amber. */
+.badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Header state tag beside the badge: one compact pill, muted per-state tint
+ * — 高峰 red, 空闲 neutral, 未登记价格 amber. */
 .peakTag,
-.offPeakTag,
-.unpricedTag {
+.offPeakTag {
   flex: none;
-  font-family: var(--billing-font-mono);
+  padding: 0 5px;
+  border-radius: var(--billing-radius-pill);
   font-size: 10px;
-  line-height: 14px;
-  padding: 1px 5px;
-  border-radius: 4px;
+  line-height: calc(16px + var(--billing-font-delta));
   white-space: nowrap;
 }
 
@@ -62,38 +84,33 @@
   background: color-mix(in srgb, var(--billing-text-tertiary) 14%, transparent);
 }
 
-.unpricedTag {
+/* The badge itself carries the same tint when no price row exists, so the
+ * 未登记价格 pill does not double up with a `¥0.00` figure. */
+.unpricedBadge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--billing-state-warn-label);
-  background: var(--billing-state-warn-bg);
-}
-
-.chevron,
-.chevronOpen {
-  flex: none;
-  color: var(--billing-text-tertiary);
-  transition: transform var(--billing-motion-fast) var(--billing-ease);
-}
-
-.chevronOpen {
-  transform: rotate(180deg);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Portaled card ───────────────────────────────────────────────────────
- * Minimal professional surface: a quiet menu panel, no inner boxes. Visual
- * hierarchy comes from type (size + weight) and the label color ladder,
- * with semantic color reserved for the rare moments that genuinely need
- * it (peak tag, near-limit warning). */
+ * The official floating-panel frame: menu surface, prominent elevation with
+ * the L1 hairline (no separate CSS border), 12px radius, 16px padding, and
+ * the 12px/18px detail type. */
 .card {
   position: fixed;
   z-index: var(--billing-z-card);
   box-sizing: border-box;
   width: 320px;
-  padding: 0;
-  border: 1px solid var(--billing-border-l2);
+  padding: 16px;
+  border: 0;
   border-radius: var(--billing-radius-3);
   background: var(--billing-surface-float);
-  box-shadow: var(--billing-shadow);
-  color: var(--billing-text-primary);
+  box-shadow: var(--billing-elevation-prominent);
+  color: var(--billing-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 /* Invisible bridge between trigger and card: it keeps the pointer inside
@@ -114,41 +131,67 @@
   box-sizing: border-box;
 }
 
-/* ── Card header: title + actions, no divider under — the model line
- * right below keeps the eye moving into the data. ─────────────────────── */
-.cardHead {
+/* ── Title row: label left, headline figure flush right ───────────────── */
+.title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 12px 14px 0;
+  gap: 16px;
+  margin-bottom: 8px;
+  color: var(--billing-text-primary);
+  font-weight: 500;
 }
 
-.titleGroup {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+.titleLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
 }
 
-.cardTitle {
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 600;
+.titleLabel svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
 }
 
-.titleSub {
-  color: var(--billing-text-tertiary);
-  font-size: 10px;
-  line-height: 14px;
+.titleValue {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.refresh,
-.settings {
+/* Actions sit between the title and its figure, quiet until the card is
+ * hovered (or focused, or on a pointer-less device). */
+.headActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity var(--billing-motion-fast) var(--billing-ease);
+}
+
+.cardInner:hover .headActions,
+.cardInner:focus-within .headActions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .headActions {
+    opacity: 1;
+  }
+}
+
+.iconButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
   border-radius: var(--billing-radius-1);
@@ -157,218 +200,55 @@
   cursor: pointer;
 }
 
-.refresh {
-  width: 20px;
-  height: 20px;
-}
-
-.settings {
-  width: 22px;
-  height: 22px;
-}
-
-.refresh:hover,
-.refresh:focus-visible,
-.settings:hover,
-.settings:focus-visible {
+.iconButton:hover,
+.iconButton:focus-visible {
   color: var(--billing-text-primary);
   background: var(--billing-hover-bg);
 }
 
-.headActions {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: none;
+.iconButton:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
-.detail {
-  flex: none;
-  padding: 2px 6px;
-  border: 1px solid var(--billing-border-l2);
-  border-radius: var(--billing-radius-1);
-  background: transparent;
-  color: var(--billing-text-secondary);
-  font-size: 11px;
-  line-height: 16px;
-  cursor: pointer;
+/* 0.5px hairline under the title (and between card sections) — the official
+ * stat-dialog rule. */
+.titleRule {
+  border-top: 0.5px solid var(--billing-border-l2);
+  margin-bottom: 10px;
 }
 
-.detail:hover,
-.detail:focus-visible {
-  color: var(--billing-text-primary);
-  background: var(--billing-hover-bg);
+.sectionRule {
+  border-top: 0.5px solid var(--billing-border-l2);
+  margin: 12px 0 10px;
 }
 
-/* ── Body: breathing room, no inner boxes ─────────────────────────────── */
-.body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 14px;
-  min-width: 0;
-}
-
-/* Model line: the current provider/model. Quiet metadata pill. */
-.modelLine {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  padding: 5px 8px;
-  border-radius: var(--billing-radius-1);
-  background: var(--billing-tag-bg);
-  font-family: var(--billing-font-mono);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.modelProvider {
-  flex: none;
-  color: var(--billing-text-tertiary);
-  font-weight: 600;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.modelSlash {
-  flex: none;
-  color: var(--billing-text-tertiary);
-}
-
-.modelName {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--billing-text-primary);
-}
-
-.modelEffort {
-  flex: none;
-  color: var(--billing-text-tertiary);
-}
-
-/* ── Hero metrics: two large figures, type-driven, no boxes ───────────── */
-.metricGrid {
+/* ── Details: the official dt/dd grid ──────────────────────────────────── */
+.details {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  min-width: 0;
-}
-
-.metric {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.metricLabel {
-  color: var(--billing-text-tertiary);
-  font-size: 11px;
-  line-height: 16px;
-  white-space: nowrap;
-}
-
-.metricValue {
-  color: var(--billing-text-primary);
-  font-family: var(--billing-font-mono);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  font-size: 20px;
-  line-height: 26px;
-  white-space: nowrap;
-}
-
-/* The hit-rate figure gets a quiet semantic tint only when it's a real
- * win; otherwise it stays on the neutral ladder. */
-.metricHitHigh {
-  color: var(--billing-state-success);
-}
-
-/* ── Token usage: label/value ladder, hairline separators ─────────────── */
-.tokensCard {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--billing-border-l2);
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px 12px;
+  grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+  gap: 6px 16px;
   margin: 0;
   min-width: 0;
-  font-size: 12px;
-  line-height: 20px;
+  color: var(--billing-text-tertiary);
 }
 
-.grid dt,
-.grid dd {
-  font-size: 12px;
-  line-height: 20px;
-}
-
-.grid dt {
-  color: var(--billing-text-secondary);
+.details dt,
+.details dd {
   min-width: 0;
+  margin: 0;
 }
 
-.grid dd {
-  margin: 0;
-  color: var(--billing-text-primary);
-  font-family: var(--billing-font-mono);
+.details dd {
+  color: var(--billing-text-secondary);
   font-variant-numeric: tabular-nums;
   text-align: right;
-  white-space: nowrap;
 }
 
-/* Peak/off-peak cost split (only when the session configures peak
- * windows). No duplicate "total" row — the total lives in the hero. */
-.periodBlock {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-top: 8px;
-  margin-top: 8px;
-  border-top: 1px solid var(--billing-border-l2);
-  min-width: 0;
-}
-
-.periodRows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.periodRow {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-}
-
-.periodLabel {
-  color: var(--billing-text-tertiary);
-  font-size: 11px;
-  line-height: 16px;
-  min-width: 0;
-  text-align: left;
-}
-
-.periodValue {
-  color: var(--billing-text-secondary);
-  font-family: var(--billing-font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  line-height: 16px;
-  white-space: nowrap;
+/* The provider/model route can be long and slash-dense: wrap it anywhere
+ * instead of pushing the grid wider (the official .route rule). */
+.route {
+  overflow-wrap: anywhere;
 }
 
 /* ── Recent-turns bar chart: vertical bars, oldest left → newest right ── */
@@ -377,8 +257,6 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--billing-border-l2);
 }
 
 .turnsHead {
@@ -389,15 +267,14 @@
 }
 
 .turnsLabel {
-  color: var(--billing-text-secondary);
-  font-size: 12px;
-  line-height: 18px;
+  color: var(--billing-text-tertiary);
+  min-width: 0;
 }
 
 .turnsCount {
-  color: var(--billing-text-tertiary);
-  font-size: 10px;
-  line-height: 14px;
+  color: var(--billing-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* The chart box: a fixed-height area where bars grow upward from the
@@ -428,6 +305,14 @@
   min-width: 0;
   height: 100%;
   gap: 3px;
+  border-radius: 4px;
+  transition: background var(--billing-motion-fast) var(--billing-ease);
+}
+
+/* Hover deepens the bar WITHIN its own hue and washes the column behind it
+ * — recoloring to ink read as a black smear over the timeline. */
+.turnBarWrap:hover {
+  background: var(--billing-token-wash);
 }
 
 .turnBar {
@@ -435,70 +320,68 @@
   max-width: 22px;
   min-height: 2px;
   border-radius: 2px 2px 0 0;
-  background: var(--billing-chart-neutral);
+  background: var(--billing-token);
   transition: background var(--billing-motion-fast) var(--billing-ease);
 }
 
 .turnBarPeak {
-  background: var(--billing-chart-peak);
+  background: var(--billing-peak);
 }
 
 .turnBarWrap:hover .turnBar {
-  background: var(--billing-chart-accent);
+  background: var(--billing-token-strong);
+}
+
+/* After the generic hover rule so a peak bar stays warm when deepened. */
+.turnBarWrap:hover .turnBarPeak {
+  background: var(--billing-peak-strong);
 }
 
 .turnNo {
   flex: none;
   color: var(--billing-text-tertiary);
-  font-family: var(--billing-font-mono);
   font-size: 9px;
   line-height: 12px;
 }
 
-/* ── Context-usage bar: quiet, one thin line, no box ──────────────────── */
+/* ── Context-usage meter ──────────────────────────────────────────────── */
 .contextBlock {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--billing-border-l2);
 }
 
 .contextLabelRow {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: 16px;
   min-width: 0;
 }
 
 .contextLabel {
   color: var(--billing-text-tertiary);
-  font-size: 11px;
-  line-height: 16px;
+  min-width: 0;
 }
 
 .contextValue {
   color: var(--billing-text-secondary);
-  font-family: var(--billing-font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  line-height: 16px;
   white-space: nowrap;
 }
 
 .contextTrack {
   position: relative;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--billing-surface-sunken);
+  height: 6px;
+  border-radius: var(--billing-radius-pill);
+  background: var(--billing-progress-track);
   overflow: hidden;
 }
 
 /* The default compaction trigger line (80% of the window): a hairline
  * reference mark, translucent so it never competes with the data fill.
- * A small notch above the track keeps it readable at 4px track height. */
+ * A small notch above the track keeps it readable at 6px track height. */
 .contextTrigger {
   position: absolute;
   top: -3px;
@@ -525,14 +408,14 @@
    * block (`position: relative` + `overflow: hidden`), and the compaction
    * trigger line's Tooltip anchor span is IN-FLOW — without absolute
    * positioning the fill's static position lands below the anchor's line
-   * box (a zero-size 16px inline-flex), pushing the bar out of the 4px
+   * box (a zero-size 16px inline-flex), pushing the bar out of the 6px
    * track and getting clipped away by `overflow: hidden`. */
   position: absolute;
   top: 0;
   left: 0;
   height: 100%;
-  border-radius: 2px;
-  background: var(--billing-text-secondary);
+  border-radius: var(--billing-radius-pill);
+  background: var(--billing-progress-fill);
   transition: width var(--billing-motion-slow) var(--billing-ease);
 }
 
@@ -542,16 +425,13 @@
 
 .contextWarn {
   color: var(--billing-state-warn-label);
-  font-size: 11px;
-  line-height: 16px;
 }
 
 .contextHint {
   color: var(--billing-text-tertiary);
-  font-size: 10px;
-  line-height: 14px;
+  font-size: 11px;
+  line-height: calc(16px + var(--billing-font-delta));
 }
-
 
 /* ── Subagent section: family totals + one row per descendant ─────────── */
 .subsBlock {
@@ -559,8 +439,6 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  padding-top: 12px;
-  border-top: 1px solid var(--billing-border-l2);
 }
 
 .subsHead {
@@ -571,22 +449,18 @@
 }
 
 .subsLabel {
-  color: var(--billing-text-secondary);
-  font-size: 12px;
-  line-height: 18px;
+  color: var(--billing-text-tertiary);
+  min-width: 0;
 }
 
 .subsRunning {
   color: var(--billing-state-success);
-  font-size: 10px;
-  line-height: 14px;
   white-space: nowrap;
 }
 
 .subsSummary {
-  color: var(--billing-text-tertiary);
-  font-size: 10px;
-  line-height: 14px;
+  color: var(--billing-text-secondary);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -597,16 +471,11 @@
   gap: 8px;
   min-width: 0;
   color: var(--billing-text-tertiary);
-  font-size: 11px;
-  line-height: 16px;
 }
 
 .subsAmount {
   color: var(--billing-text-secondary);
-  font-family: var(--billing-font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  line-height: 16px;
   white-space: nowrap;
 }
 
@@ -655,17 +524,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--billing-text-primary);
-  font-size: 11px;
-  line-height: 16px;
 }
 
 .subsTokens {
   flex: none;
   color: var(--billing-text-tertiary);
-  font-family: var(--billing-font-mono);
+  font-size: 10px;
+  line-height: 14px;
   font-variant-numeric: tabular-nums;
-  font-size: 9px;
-  line-height: 13px;
   white-space: nowrap;
 }
 
@@ -674,10 +540,9 @@
   min-width: 48px;
   text-align: right;
   color: var(--billing-text-secondary);
-  font-family: var(--billing-font-mono);
+  font-size: 11px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
-  font-size: 10px;
-  line-height: 14px;
   white-space: nowrap;
 }
 
@@ -687,12 +552,12 @@
 
 .subsTruncated {
   color: var(--billing-text-tertiary);
-  font-size: 9px;
-  line-height: 12px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .subsPending {
   color: var(--billing-text-tertiary);
-  font-size: 9px;
-  line-height: 12px;
+  font-size: 11px;
+  line-height: 16px;
 }

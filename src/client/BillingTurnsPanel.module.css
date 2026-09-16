@@ -17,55 +17,71 @@
   z-index: calc(var(--billing-z-mask) + 1);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   box-sizing: border-box;
   max-height: 70vh;
-  padding: 14px 16px;
-  border: 1px solid var(--billing-border-l2);
-  border-radius: 14px;
-  background: var(--billing-surface-panel);
-  box-shadow: var(--billing-shadow);
-  color: var(--billing-text-primary);
+  padding: 16px;
+  border: 0;
+  border-radius: var(--billing-radius-3);
+  background: var(--billing-surface-float);
+  box-shadow: var(--billing-elevation-prominent);
+  color: var(--billing-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 16px;
   flex: none;
 }
 
+/* 0.5px hairline under the head — the official panel's title rule. The
+ * negative margins pull it back into the panel's 12px gap so the head reads
+ * as a title block, not a third row. */
+.headRule {
+  border-top: 0.5px solid var(--billing-border-l2);
+  margin: -6px 0 -6px;
+}
+
 .title {
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 600;
+  color: var(--billing-text-primary);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
 }
 
 .headActions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
 }
 
-.refresh {
+/* Quiet ghost icon buttons — the same affordance the session card uses. */
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  padding: 2px 8px;
-  border: 1px solid var(--billing-border-l2);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
   border-radius: var(--billing-radius-1);
   background: transparent;
-  color: var(--billing-text-secondary);
-  font-size: 11px;
-  line-height: 16px;
+  color: var(--billing-text-tertiary);
   cursor: pointer;
 }
 
-.refresh:hover {
+.iconButton:hover,
+.iconButton:focus-visible {
   color: var(--billing-text-primary);
   background: var(--billing-hover-bg);
 }
 
-.refresh:disabled {
+.iconButton:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -74,8 +90,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
   border-radius: var(--billing-radius-1);
@@ -180,7 +196,8 @@
   white-space: nowrap;
 }
 
-/* Cost bar chart. */
+/* Cost bar chart. Money is the neutral series; the peak window carries the
+   amber tint, so this view's legend matches the header's state chips. */
 .barChart {
   display: flex;
   align-items: flex-end;
@@ -210,11 +227,11 @@
   width: 100%;
   max-width: 22px;
   border-radius: 3px 3px 0 0;
-  background: var(--billing-chart-uncached);
+  background: var(--billing-neutral-mark);
 }
 
 .barPeak {
-  background: var(--billing-chart-peak);
+  background: var(--billing-peak);
 }
 
 .barUnpriced {
@@ -234,9 +251,9 @@
 }
 
 /* Token stacked chart: uncached input / cache read / cache write / output.
-   The three input buckets are a blue lightness gradient (readable on both the
-   light and dark panel), output is a distinct warm hue so the four stacked
-   segments never blur together. */
+   The three prompt-side buckets ride the token-blue ramp (deepest = priciest);
+   output is the only generated bucket, so it takes the green. Amber stays
+   reserved for the peak window — it must not mean "output" here. */
 .stackChart {
   display: flex;
   align-items: flex-end;
@@ -290,22 +307,22 @@
 .stackUncached {
   width: 100%;
   border-radius: 3px 3px 0 0;
-  background: var(--billing-chart-uncached);
+  background: var(--billing-bucket-uncached);
 }
 
 .stackCacheRead {
   width: 100%;
-  background: var(--billing-chart-cache-read);
+  background: var(--billing-bucket-cache-read);
 }
 
 .stackCacheWrite {
   width: 100%;
-  background: var(--billing-chart-cache-write);
+  background: var(--billing-bucket-cache-write);
 }
 
 .stackOutput {
   width: 100%;
-  background: var(--billing-chart-output);
+  background: var(--billing-bucket-output);
 }
 
 /* The chart column scrolls while the value axis stays pinned. */
@@ -327,8 +344,8 @@
   align-items: center;
   gap: 4px;
   color: var(--billing-text-tertiary);
-  font-size: 10px;
-  line-height: 14px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .legendSwatch {
@@ -338,11 +355,11 @@
 }
 
 .legendOffPeak {
-  background: var(--billing-chart-uncached);
+  background: var(--billing-neutral-mark);
 }
 
 .legendPeak {
-  background: var(--billing-chart-peak);
+  background: var(--billing-peak);
 }
 
 .legendUnpriced {
@@ -350,26 +367,26 @@
 }
 
 .legendUncached {
-  background: var(--billing-chart-uncached);
+  background: var(--billing-bucket-uncached);
 }
 
 .legendCacheRead {
-  background: var(--billing-chart-cache-read);
+  background: var(--billing-bucket-cache-read);
 }
 
 .legendCacheWrite {
-  background: var(--billing-chart-cache-write);
+  background: var(--billing-bucket-cache-write);
 }
 
 .legendOutput {
-  background: var(--billing-chart-output);
+  background: var(--billing-bucket-output);
 }
 
 /* Disjoint-bucket explanation under the token chart. */
 .bucketNote {
   color: var(--billing-text-tertiary);
-  font-size: 10px;
-  line-height: 14px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 /* Detail table. */
@@ -417,7 +434,7 @@
 }
 
 .tdPeriod {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .tdPeriodPeak {
@@ -449,16 +466,16 @@
 .groupCount {
   margin-left: 6px;
   color: var(--billing-text-tertiary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .unpricedTag {
   display: inline-block;
   padding: 0 5px;
-  border-radius: 4px;
+  border-radius: var(--billing-radius-pill);
   color: var(--billing-state-warn-label);
   background: var(--billing-state-warn-bg);
   font-size: 10px;
-  line-height: 14px;
+  line-height: 16px;
 }
 

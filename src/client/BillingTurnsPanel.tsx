@@ -19,12 +19,13 @@
  */
 import { useLayoutEffect, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { formatPrice, formatPriceAxis, formatTime, formatTokens } from './format.ts'
+import { IconRefreshOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { formatCacheHitPercent, formatPrice, formatPriceAxis, formatTime, formatTokens } from './format.ts'
 import { getTurns } from './billing-api.ts'
 import { aggregateTurns, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { currencySymbol } from './BillingAction.tsx'
 import type { BillingKey } from './locales.ts'
-import { useTooltipState } from './Tooltip.tsx'
+import { Tooltip, useTooltipState } from './Tooltip.tsx'
 import './theme.module.css'
 import css from './BillingTurnsPanel.module.css'
 
@@ -182,7 +183,10 @@ function TokenCells({ row, t, costText }: { row: TurnCost | TurnSummary; t: (key
       <td className={css.tdNum}>{row.cacheReadTokens > 0 ? formatTokens(row.cacheReadTokens) : '–'}</td>
       <td className={css.tdNum}>{row.cacheWriteTokens > 0 ? formatTokens(row.cacheWriteTokens) : '–'}</td>
       <td className={css.tdNum}>{formatTokens(row.outputTokens)}</td>
-      <td className={css.tdNum}>{`${Math.round(row.cacheHitRate * 100)}%`}</td>
+      {/* Same honest percentage as the card: the prompt-side denominator
+       *  (cache write is not part of the prompt read) and no rounding a
+       *  partial hit up to 100%. */}
+      <td className={css.tdNum}>{formatCacheHitPercent(row.cacheReadTokens, row.inputTokens - row.cacheWriteTokens) ?? '–'}</td>
       <td className={css.tdNum}>
         {costText ?? (row.priced ? formatPrice(row.cost, currencySymbol(row.currency)) : <span className={css.unpricedTag}>{t('turn.unpriced')}</span>)}
       </td>
@@ -332,30 +336,33 @@ export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurns
         <div className={css.head}>
           <span className={css.title}>{t('turn.title')}</span>
           <div className={css.headActions}>
-            <button
-              type="button"
-              className={css.refresh}
-              aria-label={t('refresh.aria')}
-              disabled={loading}
-              onClick={() => {
-                setLoading(true)
-                setFailed(false)
-                void getTurns(sessionId).then(full => {
-                  if (!aliveRef.current) return
-                  setTurns(full)
-                  setLoading(false)
-                }).catch(() => {
-                  if (!aliveRef.current) return
-                  setFailed(true)
-                  setLoading(false)
-                })
-              }}
-            >
-              {t('refresh.title')}
-            </button>
+            <Tooltip label={t('refresh.title')}>
+              <button
+                type="button"
+                className={css.iconButton}
+                aria-label={t('turn.reload')}
+                disabled={loading}
+                onClick={() => {
+                  setLoading(true)
+                  setFailed(false)
+                  void getTurns(sessionId).then(full => {
+                    if (!aliveRef.current) return
+                    setTurns(full)
+                    setLoading(false)
+                  }).catch(() => {
+                    if (!aliveRef.current) return
+                    setFailed(true)
+                    setLoading(false)
+                  })
+                }}
+              >
+                <IconRefreshOutline16 size={12} />
+              </button>
+            </Tooltip>
             <button type="button" className={css.close} onClick={onClose} aria-label={t('turn.close')}>×</button>
           </div>
         </div>
+        <div className={css.headRule} aria-hidden="true" />
 
         {loading && turns.length === 0 ? <div className={css.empty}>{t('settings.loading')}</div> : null}
         {failed && turns.length === 0 ? <div className={css.empty}>{t('settings.error')}</div> : null}

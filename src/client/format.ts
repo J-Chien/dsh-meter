@@ -47,6 +47,50 @@ export function parsePriceInput(text: string, fallback: number): number {
   return Math.round(value * PRICE_PRECISION)
 }
 
+/**
+ * Exact token count with thousands separators (`110663` → `110,663`).
+ * Mirrors the official chat panel's `formatExactTokens`, whose group
+ * separator is `,` in both locales it ships.
+ */
+export function formatExactTokens(tokens: number): string {
+  const digits = String(Math.max(0, Math.round(tokens)))
+  const groups: string[] = []
+  for (let end = digits.length; end > 0; end -= 3) {
+    groups.unshift(digits.slice(Math.max(0, end - 3), end))
+  }
+  return groups.join(',')
+}
+
+/** Exact token count with the official ` tok` unit: `110,663 tok`. */
+export function formatExactTok(tokens: number): string {
+  return `${formatExactTokens(tokens)} tok`
+}
+
+/** Compact token count with the official ` tok` unit: `111K tok`. */
+export function formatCompactTok(tokens: number): string {
+  return `${formatTokens(tokens)} tok`
+}
+
+/**
+ * Cache-hit share for the official details row: ordinary precision is one
+ * decimal (`73.1%`), and a partial hit that would round to `100.0` widens
+ * its precision until the text is honest — never a fake 100%.
+ * @param cacheReadTokens - prompt tokens served from cache.
+ * @param promptTokens - aggregate prompt tokens.
+ * @returns percentage text, or null when there was no prompt input.
+ */
+export function formatCacheHitPercent(cacheReadTokens: number, promptTokens: number): string | null {
+  if (promptTokens <= 0) return null
+  if (cacheReadTokens >= promptTokens) return '100%'
+  const ratio = (Math.max(0, cacheReadTokens) / promptTokens) * 100
+  for (let places = 1; places <= 8; places += 1) {
+    const text = ratio.toFixed(places)
+    // `100.0`/`100.00` would claim a complete hit; widen and retry.
+    if (Number(text) < 100) return `${text}%`
+  }
+  return '<100%'
+}
+
 /** Compact token count: 0, 999, 1.2K, 3.4M. */
 export function formatTokens(tokens: number): string {
   if (tokens < 1_000) return String(tokens)

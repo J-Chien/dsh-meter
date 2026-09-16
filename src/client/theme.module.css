@@ -23,12 +23,15 @@
 
 /* ── Theme-independent constants (no --dsw-* references) ─────────────── */
 :root {
-  --billing-z-card: 100;
-  --billing-z-mask: 200;
-  --billing-z-tooltip: 300;
+  /* Stacking ladder. The card matches the official stat dialog's z-index
+   * (1100), so the mask/tooltip rungs sit above it in the same order. */
+  --billing-z-card: 1100;
+  --billing-z-mask: 1200;
+  --billing-z-tooltip: 1300;
   --billing-radius-1: 6px;
   --billing-radius-2: 8px;
   --billing-radius-3: 12px;
+  --billing-radius-pill: 999px;
   --billing-ease: cubic-bezier(0.2, 0, 0, 1);
   --billing-motion-fast: 120ms;
   --billing-motion-medium: 160ms;
@@ -59,9 +62,24 @@ body {
 
   --billing-hover-bg: var(--dsw-alias-interactive-bg-hover);
   --billing-hover-danger-bg: var(--dsw-alias-interactive-bg-hover-danger);
-  --billing-tag-bg: var(--dsw-alias-markdown-tag);
   --billing-module-bg: var(--dsw-alias-bg-module-platform);
   --billing-shadow: var(--dsw-shadow-lv3);
+
+  /* The official floating-panel elevation (stat dialog / menu surface): the
+   * upstream --dsw-elevation-prominent with its hairline stroke re-pointed
+   * from L4 to L1. Composed here rather than overriding
+   * --dsw-elevation-stroke-color on the surface, so component CSS keeps its
+   * "never touch a --dsw-* variable" rule. */
+  --billing-elevation-prominent:
+    0 0 0 0.5px var(--dsw-alias-border-l1),
+    0 3px 8px 0 #0000000a,
+    0 0 20px 0 #0000000d;
+
+  /* Content type scale. The official pills and panels track the user's
+   * font-size setting: sizes are the base content size minus 1-2px, and
+   * heights/paddings grow by --dsh-content-font-delta. */
+  --billing-font-delta: var(--dsh-content-font-delta, 0px);
+  --billing-font-size-secondary: var(--dsh-content-font-size-secondary, 13px);
 
   --billing-state-success: var(--dsw-alias-state-success-primary);
   --billing-state-warn: var(--dsw-alias-state-warn-primary);
@@ -71,12 +89,55 @@ body {
   --billing-state-business: var(--dsw-alias-state-business-primary);
   --billing-state-business-soft: var(--dsw-alias-state-business-tertiary);
 
-  --billing-chart-uncached: var(--dsw-static-deepseek-400);
-  --billing-chart-cache-read: var(--dsw-static-deepseek-200);
-  --billing-chart-cache-write: var(--dsw-static-deepseek-500);
-  --billing-chart-output: var(--dsw-static-amber-400);
-  --billing-chart-peak: var(--dsw-static-amber-400);
-  --billing-chart-neutral: var(--dsw-alias-label-tertiary);
-  --billing-chart-accent: var(--dsw-alias-label-primary);
+  /* ── Data palette: one meaning per color ──────────────────────────────
+   * Two registers, deliberately kept apart:
+   *
+   * DATA TINTS (a color identifies a series inside a chart):
+   *   blue  = TOKEN quantities — the context meter, the per-turn growth bars
+   *           and the three prompt-side buckets. One family, three steps:
+   *           the deeper the blue, the more expensive the token.
+   *   green = GENERATED tokens (output) — the one bucket that is not input.
+   *   amber = PREMIUM period — the peak series, its legend swatch, and (as
+   *           the warn hue) the near-limit meter and the unpriced state.
+   *   gray  = NEUTRAL — money, idle series, empty marks.
+   *
+   * STATE CHIPS (the header's live-status tags) keep their own colors:
+   *   red   = 高峰 (currently paying peak rates) — kept red on purpose: it
+   *           is an alert about this instant, not a series in a chart, and
+   *           the amber peak tint belongs to the charts/legend.
+   *   gray  = 空闲, amber = 未登记价格.
+   *
+   * History: amber used to be BOTH the peak tint and the output bucket, and
+   * blue was both a cost series and a token bucket, so switching the detail
+   * panel between 费用 and Token silently changed what a color meant. Output
+   * moved to green and money moved to gray to end that overlap. */
+  --billing-token: var(--dsw-static-deepseek-500);
+  --billing-token-soft: var(--dsw-static-deepseek-200);
+  --billing-token-strong: var(--dsw-static-deepseek-600);
+  /* Hover on a token mark: a soft wash of the same hue, never ink. */
+  --billing-token-wash: color-mix(in srgb, var(--dsw-static-deepseek-500) 12%, transparent);
+
+  /* Prompt-side buckets, ordered by price: cache read (cheapest) → cache
+   * write → uncached input (priciest); output is the generated one. */
+  --billing-bucket-uncached: var(--billing-token-strong);
+  --billing-bucket-cache-read: var(--billing-token-soft);
+  --billing-bucket-cache-write: var(--billing-token);
+  --billing-bucket-output: var(--dsw-alias-state-success-primary);
+
+  /* Cost series and idle/empty marks. */
+  --billing-neutral-mark: var(--dsw-alias-label-tertiary);
+
+  /* Peak series tint (charts + legend). NOT the header chip: 高峰 stays red
+   * as a live-state alert, which is a different register from a data series. */
+  --billing-peak: var(--dsw-alias-state-warn-primary);
+  --billing-peak-strong: var(--dsw-static-amber-600);
+
+  /* The context meter measures tokens, so it rides the token blue. The DSH
+   * brand alias would be the near-black "ink" primary (the primary-button
+   * fill), which reads as a divider at 6px. */
+  --billing-progress-fill: var(--billing-token);
+  /* Track: a wash of the fill — the card sits on the menu surface, where a
+   * bg-layer track would be invisible. */
+  --billing-progress-track: color-mix(in srgb, var(--dsw-static-deepseek-500) 16%, transparent);
 }
 

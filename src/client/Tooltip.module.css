@@ -1,11 +1,12 @@
 /**
  * Tooltip bubble: one small floating surface above the anchor, styled with
  * the same tokens every other billing surface uses (see theme.module.css).
- * z-index 300 sits above the badge card (100) and the turns mask (200).
+ * The tooltip is the top rung of the plugin's stacking ladder
+ * (--billing-z-tooltip), above the badge card and the turns mask.
  */
 .tooltip {
   position: fixed;
-  z-index: 300;
+  z-index: var(--billing-z-tooltip, 1300);
   max-width: 320px;
   padding: 4px 8px;
   border: 1px solid var(--billing-border-l2);

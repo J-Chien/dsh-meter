@@ -5,6 +5,26 @@
 
 ---
 
+### v0.3.22（界面：悬浮卡片/微标/逐轮面板对齐官方统计面板样式）
+
+官方 chat 的「本轮用量」弹层（`@deepseek-ai/dsh-client-ui-chat` 的 `TurnUsagePanel` + `stat-dialog.module.css`，rc.2 版）把弹层样式整体翻新了：字号、颜色梯、单位、显示方式都换了。本版把插件的三个客户端表面按同一套规格重做，**只动样式与文案，不动任何口径/数据**。
+
+- **设计规格来源**：直接从运行中的 GUI（`dsh web` 的 rc.2 前端）里取出官方的 `stat-dialog.module.css` / `TurnUsagePanel.module.css` 原文（未压缩 CSS 在插件 bundle 里可读），逐条落进 `theme.module.css` 的 `--billing-*` 令牌层——组件 CSS 仍然**不直接引用 `--dsw-*`**。
+- **token 单位与精度**：明细行改为官方口径——**精确计数 + 千位分隔 + ` tok` 单位**（`110,663 tok`），新增 `formatExactTokens` / `formatExactTok` / `formatCompactTok`。缓存命中改为官方 `formatCacheHitPercent` 语义：一位小数（`73.1%`），且**部分命中绝不四舍五入成 100%**（会逐位加精度直到诚实为止，如 `99.98%`）。
+- **文案对齐官方**：`输入（缓存命中）/输入（缓存未命中）` → **`缓存读取` / `未缓存输入`**（+ `缓存写入` / `输出`），并新增 `提供方 / 模型` 行；逐轮面板的四段桶图例与明细表列头同步（`未缓存` / `读取` / `写入` / `输出`），同一面板不再有两套词汇。
+- **统计卡片**：由「标题+副标题 + 两个 20px hero 数字 + 独立 token 小卡」改为官方版式——标题行（图标 + `本会话计费`，右侧为总费用，等宽数字）+ 0.5px 标题细线 + **单个 `dt/dd` 网格**（`grid-template-columns: minmax(76px,auto) minmax(0,1fr)`、`gap 6px 16px`；标签 tertiary、数值 secondary 右对齐、`tabular-nums`；长 model 路由 `overflow-wrap:anywhere`）。费用拆分、每轮图、子代理、上下文条改为同一细线分隔的小节，字号收敛到 12/18 与 11/16 两级。面板本体：`border:0` + **官方 prominent 阴影**（`0 0 0 .5px border-l1` 描边 + 两层柔光）、12px 圆角、16px 内边距、`--dsw-specific-menu` 底色、12px/18px 正文。刷新/详情/设置改为 22px ghost 图标按钮，hover/focus 卡片时才显形（`@media (hover:none)` 常显）。
+- **头部微标**：改为官方药丸——`28px + --dsh-content-font-delta` 高、全圆角、`6px 8px` 内边距、`gap 4px`、`--dsh-content-font-size-secondary`（13px）tertiary 文字 + 图标（`IconDataOutline16`），hover 与 `aria-expanded=true` 共用 `interactive-bg-hover` 底色 + secondary 文字；去掉了原来的 chevron（官方药丸没有），高峰/空闲/未登记价格标签改为同行全圆角小 chip。字号跟随用户在设置里的字号档位（`--dsh-content-font-delta`）。
+- **逐轮消耗面板**：对齐同一浮层规格（12px 圆角、prominent 阴影、细线标题线、13px/500 标题），把原来那枚**以整句 `refresh.title` 当按钮文字**的刷新按钮改成 22px ghost 图标按钮 + Tooltip（其 `aria-label` 顺带修正为新增的 `turn.reload`「重新加载逐轮明细」——该按钮只重拉明细，不重算价格，旧文案是错的）；图例/注释/分组计数由 10px 提到 11px。
+- **上下文占用条**：轨道 4px → **6px 全圆角**，填充色由近黑 `label-secondary` 改为品牌蓝 `state-business-primary`（`--billing-progress-fill`）——DSH 的 `brand-primary` 实为近黑「墨色」（primary 按钮底色），当 6px 进度条读起来像分隔线。
+- **叠放次序**：卡片 z-index 对齐官方弹层的 `1100`，遮罩/提示顺次上移（1200/1300），Tooltip 的硬编码 `300` 改走 `--billing-z-tooltip`。
+- **颜色角色化（同日修订）**：原来的调色板有两处同色异义——琥珀既是「高峰时段」又是「输出 token」的堆叠段，蓝色既是费用柱又是未缓存输入桶，于是在逐轮面板里切换「费用 / Token」会悄悄改变同一个颜色的含义；卡片用灰柱、面板用蓝柱画同一件事也让两张图看着不像一套。现在按**角色**定色，同一角色在所有表面同色：**蓝 = token 量**（上下文进度条、每轮新增柱、三个输入桶；深蓝=更贵）、**绿 = 生成的输出 token**、**琥珀 = 高峰时段序列**（高峰柱、高峰图例、接近上限、未登记）、**灰 = 中性**（费用柱=钱、空闲序列、空值）。费用柱因此回到灰、输出桶改绿、空闲图例与头部「空闲」标签同为灰。头部**「高峰」标签保持红色**（按需求确认）——它是「此刻正在按高峰价计费」的实时告警，与图表里指代序列的琥珀是两个语域，不强行同色。
+- **柱状 hover 不再变全黑（同日修订）**：每轮新增柱 hover 原来把柱子刷成 `label-primary`（近黑墨色），在时间轴上像一道黑渍。改为「同色系加深 + 柱位淡底」——普通柱 → 深一档蓝 + 12% 蓝洗底，高峰柱 → 深一档琥珀（`--billing-peak-strong`），柱位加圆角 hover 轨道。上下文轨道原来用 `bg-layer-3`，而卡片底色本身就是 `specific-menu`(`bg-layer-3`)，轨道不可见；改用 16% 蓝洗底，轨道在两种主题下都可见。
+- **缓存命中口径统一（同日修订）**：逐轮明细表与卡片柱状 tooltip 原来各自 `Math.round(rate*100)`，会把 99.2% 显示成「100%」——与卡片刚改的「部分命中绝不显示 100%」自相矛盾。两处都改走同一个 `formatCacheHitPercent(cacheRead, prompt)`（分母同样剔掉缓存写入），无 prompt 输入时显示「–」。
+- **修复：卡片齿轮点开的是对话里的「本轮用量」（同日修订，P0）**：`openBillingSettings` 原来用「排除法」找设置入口——「是 `aria-haspopup=dialog` 且既不是本插件、又没有 `aria-label` 的那个按钮」。官方把消息行的「用量 111K tok」药丸做成同一个弹层触发器（有 `aria-haspopup`、**没有** `aria-label`）之后，这个规则命中了它，于是齿轮打开的是对话的 token 用量弹层，而不是插件设置。改为**按槽位取**：先 `[data-slot="sidebar.settings"]`（DSH 侧栏设置入口，与 better-sidebar 样式表用的是同一个锚点），兜底再找「不在 `[data-slot^="conversation."]` 子树内」的弹层触发器——对话里的那些药丸全在 conversation 子树内，因此不会再被误点。
+- **无行为变更**：投影形状、路由、价格口径、交互时序（hover 200ms / 离开 300ms / 点击固定）全不动；`pnpm typecheck` + `pnpm test` 全绿。
+
+---
+
 ### v0.3.20（悬浮卡片：子代理费用统计）
 
 subagent 在 harness 中是**独立会话**（header `origin: 'subagent'` + `parentSession`），其用量从不进父会话日志，父会话的 `billing` 投影天然看不到。本版把会话的后代子代理费用搬进悬浮卡片。

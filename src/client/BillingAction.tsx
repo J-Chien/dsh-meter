@@ -6,19 +6,18 @@
  * that opens the settings panel (the price editor is a native
  * `settings.plugin.item` card in the panel's plugins tab).
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconChevronDownOutline14, IconRefreshOutline16, IconSettingsOutline14,
+  IconDataOutline16, IconListPenOutline16, IconRefreshOutline16, IconSettingsOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, anyPeakActive, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, aggregateTurns, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
-import { formatPrice, formatTime, formatTokens } from './format.ts'
+import { formatCacheHitPercent, formatCompactTok, formatExactTok, formatPrice, formatTime, formatTokens } from './format.ts'
 import { refreshSessionStats, getSubagentsStats } from './billing-api.ts'
 import { usePricingTable } from './pricing-scope.ts'
 import { requestLocateModel } from './locate.ts'
 import type {} from './types.ts'
-import { BillingLabel } from './BillingLabel.tsx'
 import { type BillingKey } from './locales.ts'
 import { BillingTurnsPanel } from './BillingTurnsPanel.tsx'
 import { CLICK_DELAY_MS, HOVER_CLOSE_MS, HOVER_OPEN_MS } from './interaction.ts'
@@ -116,13 +115,13 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
       <BillingPopover
         renderTrigger={open => (
           <button type="button" data-billing-trigger="" className={css.trigger} aria-label={t('trigger.aria')} aria-haspopup="dialog" aria-expanded={open}>
-            <span className={unpriced ? css.unpricedTag : css.badge}>{badge}</span>
+            <IconDataOutline16 className={css.triggerIcon} />
+            <span className={unpriced ? css.unpricedBadge : css.badge}>{badge}</span>
             {hasPeakModels ? (
               <span className={peakNow ? css.peakTag : css.offPeakTag}>
                 {peakNow ? t('trigger.peak') : t('trigger.offPeak')}
               </span>
             ) : null}
-            <IconChevronDownOutline14 className={open ? css.chevronOpen : css.chevron} />
           </button>
         )}
         content={card}
@@ -264,6 +263,7 @@ function BillingPopover({ renderTrigger, content }: {
     <div
       ref={cardRef}
       className={css.card}
+      data-billing-card=""
       style={pos !== null
         ? { left: pos.left, top: pos.top }
         : { visibility: 'hidden' }}
@@ -332,7 +332,9 @@ function BillingPopover({ renderTrigger, content }: {
   )
 }
 
-/** The hover card body. */
+/** The hover card body: the official panel frame (title row → 0.5px rule →
+ *  label/value details grid) with the billing-only sections folded in below
+ *  it, each separated by the same hairline. */
 function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefresh, onDetail }: {
   sessionId: string
   stats: SessionBillingStats
@@ -348,20 +350,24 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
     && stats.contextWindow > 0
     ? stats.lastRequestInputTokens / stats.contextWindow
     : undefined
+  const promptTokens = stats.uncachedInputTokens + stats.cacheReadTokens
+  const cacheHit = formatCacheHitPercent(stats.cacheReadTokens, promptTokens)
   return (
     <div className={css.cardInner}>
-      <div className={css.cardHead}>
-        <div className={css.titleGroup}>
-          <span className={css.cardTitle}>{t('card.title')}</span>
-          <span className={css.titleSub}>{t('card.titleSub')}</span>
-        </div>
-        <div className={css.headActions}>
+      <div className={css.title}>
+        <span className={css.titleLabel}>
+          <IconDataOutline16 />
+          {t('card.title')}
+        </span>
+        {/* Actions sit left of the headline figure so the figure stays flush
+         *  right, exactly where the official panel puts its total. */}
+        <span className={css.headActions}>
           {/* All three share the plugin-wide Tooltip dwell (interaction.ts), so
            *  button hints and chart hovers feel like one system. */}
           <Tooltip label={t('refresh.title')}>
             <button
               type="button"
-              className={css.refresh}
+              className={css.iconButton}
               aria-label={t('refresh.aria')}
               disabled={refreshing}
               onClick={onRefresh}
@@ -372,100 +378,88 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
           <Tooltip label={t('card.detail.aria')}>
             <button
               type="button"
-              className={css.detail}
+              className={css.iconButton}
               aria-label={t('card.detail.aria')}
               onClick={onDetail}
             >
-              {t('card.detail')}
+              <IconListPenOutline16 size={12} />
             </button>
           </Tooltip>
           <Tooltip label={t('settings.open.aria')}>
             <button
               type="button"
-              className={css.settings}
+              className={css.iconButton}
               aria-label={t('settings.open.aria')}
               onClick={() => { openBillingSettings(stats.currentModel) }}
             >
               <IconSettingsOutline14 />
             </button>
           </Tooltip>
-        </div>
+        </span>
+        <span className={css.titleValue}>{totalCostText(stats)}</span>
       </div>
 
-      <div className={css.body}>
+      <div className={css.titleRule} aria-hidden="true" />
+
+      <dl className={css.details}>
         {stats.currentModel !== undefined
           ? (
-            <div className={css.modelLine}>
-              <span className={css.modelProvider}>{stats.currentModel.provider}</span>
-              <span className={css.modelSlash}>/</span>
-              <span className={css.modelName}>{stats.currentModel.model}</span>
-              {stats.currentModel.reasoningEffort !== undefined
-                ? <span className={css.modelEffort}>{stats.currentModel.reasoningEffort}</span>
-                : null}
-            </div>
+            <>
+              <dt>{t('row.model')}</dt>
+              <dd className={css.route}>{modelRoute(stats.currentModel)}</dd>
+            </>
           )
           : null}
+        {cacheHit !== null ? <><dt>{t('row.cacheHit')}</dt><dd>{cacheHit}</dd></> : null}
+        <dt>{t('row.uncachedInput')}</dt><dd>{formatExactTok(stats.uncachedInputTokens)}</dd>
+        <dt>{t('row.cacheRead')}</dt><dd>{formatExactTok(stats.cacheReadTokens)}</dd>
+        {stats.cacheWriteTokens > 0
+          ? <><dt>{t('row.cacheWrite')}</dt><dd>{formatExactTok(stats.cacheWriteTokens)}</dd></>
+          : null}
+        <dt>{t('row.output')}</dt><dd>{formatExactTok(stats.outputTokens)}</dd>
+      </dl>
 
-        {/* Hero figures first: the two numbers that matter most. */}
-        <MetricGrid stats={stats} t={t} />
+      {stats.hasPeakConfig ? (
+        <>
+          <div className={css.sectionRule} aria-hidden="true" />
+          <PeriodSplit stats={stats} t={t} />
+        </>
+      ) : null}
 
-        {/* Token detail: no duplicate hit-rate / total rows — those live
-         *  in the hero. The peak/off-peak split is the only extra here,
-         *  and only when the session actually configures peak windows. */}
-        <div className={css.tokensCard}>
-          <dl className={css.grid}>
-            <dt><BillingLabel label={t('row.input')} hint={t('row.cacheHit')} hintInline /></dt><dd>{formatTokens(stats.cacheReadTokens)}</dd>
-            <dt><BillingLabel label={t('row.input')} hint={t('row.cacheMiss')} hintInline /></dt><dd>{formatTokens(stats.uncachedInputTokens)}</dd>
-            {stats.cacheWriteTokens > 0
-              ? <><dt>{t('row.cacheWrite')}</dt><dd>{formatTokens(stats.cacheWriteTokens)}</dd></>
-              : null}
-            <dt>{t('row.output')}</dt><dd>{formatTokens(stats.outputTokens)}</dd>
-          </dl>
-
-          {stats.hasPeakConfig ? (
-            <PeriodSplit stats={stats} t={t} />
-          ) : null}
-        </div>
-
-        {turns.length > 0 ? (
+      {turns.length > 0 ? (
+        <>
+          <div className={css.sectionRule} aria-hidden="true" />
           <TurnsBarChart turns={turns} t={t} />
-        ) : null}
+        </>
+      ) : null}
 
-        <SubagentsSection sessionId={sessionId} t={t} reloadKey={subagentsReload} />
+      <SubagentsSection sessionId={sessionId} t={t} reloadKey={subagentsReload} />
 
-        {contextRatio !== undefined ? (
+      {contextRatio !== undefined ? (
+        <>
+          <div className={css.sectionRule} aria-hidden="true" />
           <ContextBar ratio={contextRatio} t={t} stats={stats} />
-        ) : null}
-      </div>
+        </>
+      ) : null}
     </div>
   )
 }
 
-/** The two hero figures: total cost + cache hit rate. Type-driven, no boxes.
- *  The hit rate picks up a quiet success tint only at a genuinely high rate;
- *  otherwise it stays on the neutral label ladder. */
-function MetricGrid({ stats, t }: {
-  stats: SessionBillingStats
-  t: (key: BillingKey) => string
-}) {
-  const hitRate = Math.round(stats.cacheHitRate * 100)
-  const currencies = Object.keys(stats.cost)
-  const totalText = currencies.length === 0
-    ? formatPrice(0, '¥')
-    : currencies.map(c => formatPrice(stats.cost[c] ?? 0, currencySymbol(c))).join(' + ')
-  const hitHigh = hitRate >= 70
-  return (
-    <div className={css.metricGrid}>
-      <div className={css.metric}>
-        <span className={css.metricLabel}>{t('row.cost')}</span>
-        <span className={css.metricValue}>{totalText}</span>
-      </div>
-      <div className={css.metric}>
-        <span className={css.metricLabel}>{t('row.cacheHitRate')}</span>
-        <span className={`${css.metricValue}${hitHigh ? ` ${css.metricHitHigh}` : ''}`}>{`${hitRate}%`}</span>
-      </div>
-    </div>
-  )
+/** The card's headline figure: the session total across every currency it
+ *  touched, joined rather than mixed (`¥1.20 + $0.35`); an unpriced session
+ *  reads as a zero. Lives in the title row, where the official panel keeps
+ *  its headline number. */
+function totalCostText(stats: SessionBillingStats): string {
+  const currencies = Object.keys(stats.cost).sort((a, b) => a.localeCompare(b))
+  if (currencies.length === 0) return formatPrice(0, '¥')
+  return currencies.map(c => formatPrice(stats.cost[c] ?? 0, currencySymbol(c))).join(' + ')
+}
+
+/** The provider/model route exactly as the official panel renders it:
+ *  `provider/model`, with the request's reasoning effort appended. */
+function modelRoute(model: { provider: string; model: string; reasoningEffort?: string }): string {
+  const route = `${model.provider}/${model.model}`
+  return model.reasoningEffort !== undefined ? `${route}/${model.reasoningEffort}` : route
 }
 
 /** The context bar: the most recent request's total input over the model's
@@ -590,8 +584,9 @@ function TurnBar({ turn, level, max, t }: {
   max: number
   t: (key: BillingKey) => string
 }) {
+  const hit = formatCacheHitPercent(turn.cacheReadTokens, turn.inputTokens - turn.cacheWriteTokens)
   const [, setTooltipAnchor, tooltip] = useTooltipState({
-    label: `${t('turn.turn')} ${turn.turn} · ${t('turn.growth')} ${formatTokens(level)} · ${formatPrice(turn.cost, currencySymbol(turn.currency))} · ${t('turn.hitRate')} ${Math.round(turn.cacheHitRate * 100)}%`,
+    label: `${t('turn.turn')} ${turn.turn} · ${t('turn.growth')} ${formatTokens(level)} · ${formatPrice(turn.cost, currencySymbol(turn.currency))} · ${t('turn.hitRate')} ${hit ?? '—'}`,
     align: 'center',
   })
   return (
@@ -660,32 +655,28 @@ function TurnsBarChart({ turns, t }: {
 }
 
 /** Peak/off-peak cost split per currency, shown only when the session
- *  configures peak windows. The total itself lives in the hero — no
- *  duplicate here. */
+ *  configures peak windows. The total itself is the title figure — no
+ *  duplicate here. Rows join the same dt/dd grid as the token block. */
 function PeriodSplit({ stats, t }: {
   stats: SessionBillingStats
   t: (key: BillingKey) => string
 }) {
   return (
-    <div className={css.periodBlock}>
-      {Object.keys(stats.cost).map(currency => {
+    <dl className={css.details}>
+      {Object.keys(stats.cost).sort((a, b) => a.localeCompare(b)).map(currency => {
         const symbol = currencySymbol(currency)
         const period = stats.byPeriod[currency]
         if (period === undefined) return null
         return (
-          <div key={currency} className={css.periodRows}>
-            <div className={css.periodRow}>
-              <span className={css.periodLabel}>{t('period.offPeak')}</span>
-              <span className={css.periodValue}>{formatPrice(period.offPeak, symbol)}</span>
-            </div>
-            <div className={css.periodRow}>
-              <span className={css.periodLabel}>{t('period.peak')}</span>
-              <span className={css.periodValue}>{formatPrice(period.peak, symbol)}</span>
-            </div>
-          </div>
+          <Fragment key={currency}>
+            <dt>{t('period.offPeak')}</dt>
+            <dd>{formatPrice(period.offPeak, symbol)}</dd>
+            <dt>{t('period.peak')}</dt>
+            <dd>{formatPrice(period.peak, symbol)}</dd>
+          </Fragment>
         )
       })}
-    </div>
+    </dl>
   )
 }
 
@@ -842,17 +833,29 @@ function badgeText(stats: SessionBillingStats, t: (key: BillingKey) => string): 
  * by the card when it mounts (the user opens the plugins tab), expanding the
  * provider and scrolling the model row into view.
  *
- * The settings trigger has no stable attribute hook, so disambiguate among
- * the dialog-popover buttons: this plugin's own trigger is tagged
- * `data-billing-trigger`, the context meter's carries an `aria-label`; the
- * sidebar settings trigger is the remaining text-named one.
+ * The trigger is resolved by SLOT, not by inverse-elimination. The old rule
+ * ("a `aria-haspopup="dialog"` button that is neither ours nor labelled")
+ * silently became wrong when the chat added the turn-usage pill: that pill
+ * opens a dialog, lives in the transcript and carries no `aria-label`, so the
+ * gear clicked IT and opened 「本轮用量」 instead of the settings panel. The
+ * sidebar's settings entry is the stable hook (the same `data-slot` anchor
+ * better-sidebar's stylesheet uses), and the fallback keeps the search OUT of
+ * the conversation column, where those unlabeled dialog pills live.
+ *
+ * @param model - the model to expand once the settings card mounts.
  */
 function openBillingSettings(
   model?: { provider: string; model: string },
 ): void {
-  const trigger = [...document.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]')]
-    .find(b => !b.hasAttribute('data-billing-trigger') && !b.hasAttribute('aria-label'))
-  if (trigger === undefined) return
+  const slot = document.querySelector('[data-slot="sidebar.settings"]')
+  const trigger = slot instanceof HTMLButtonElement
+    ? slot
+    : slot?.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')
+      ?? slot?.querySelector<HTMLButtonElement>('button')
+      ?? [...document.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]')]
+        .find(b => !b.hasAttribute('data-billing-trigger')
+          && b.closest('[data-slot^="conversation."]') === null)
+  if (trigger === undefined || trigger === null) return
   if (model !== undefined) requestLocateModel(model)
   trigger.click()
 }
