@@ -1,9 +1,10 @@
 /**
  * Billing client plugin: contributes a persistent session-header action
  * (cost badge + hover card + refresh) and a native settings card (rc.7
- * `settings.plugin.item`, keyed by the `billing-pricing` namespace) for the
- * price table. The plugin is a module-table consumer only — it imports no
- * dsh client package values (platform modules + type-only imports only), so
+ * `settings.plugin.item`, identified by `billing` and bound to the
+ * `billing-pricing` namespace) for the price table. The plugin is a
+ * module-table consumer only — it imports no dsh client package values
+ * (platform modules + type-only imports only), so
  * its bundle passes the client purity gate as a third-party package.
  */
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
@@ -55,10 +56,11 @@ export function apply(ctx: ClientContext): void {
     inject: actionInjected,
   }, BillingAction))
 
-  // Native settings card (rc.7): keyed by the settings namespace, rendered in
-  // the settings panel's plugins tab. Keyed slots take no id/order/label.
+  // Native settings card (rc.7): list slots require a stable id; `key`
+  // associates this card with its settings namespace.
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
+    id: 'billing',
     key: PRICING_NAMESPACE,
     locale: NS,
     inject: (): BillingSettingsInjected => ({ t }),
