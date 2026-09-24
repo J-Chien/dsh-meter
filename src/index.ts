@@ -1,7 +1,7 @@
 /**
- * dsh-meter node half: the host billing plugin (settings namespace,
- * session projection, and /billing/api routes). Re-exports the apply used by
- * the Loader.
+ * dsh-meter node half: the host billing plugin (volatile Config price
+ * table, session projection, and /billing/api routes). Re-exports the apply
+ * used by the Loader.
  */
 export * from './host/index.ts'
 export { foldBilling, foldEvent, EMPTY_STATS } from './host/session-stats.ts'

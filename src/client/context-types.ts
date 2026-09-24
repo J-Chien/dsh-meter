@@ -20,10 +20,10 @@ export interface ClientLocaleService {
 }
 
 /** Client plugin context (structural subset of the runtime's ClientContext). */
-export type ClientContext = Omit<Context, 'slots' | 'locale' | 'settingsScope'> & {
+export type ClientContext = Omit<Context, 'slots' | 'locale' | 'configForms'> & {
   slots: ClientSlotsService
   locale: ClientLocaleService
-  settingsScope: ClientSettingsScopeBinder
+  configForms: ClientConfigForms
 }
 
 /** Snapshot of one settings-namespace binding (structural mirror of the
@@ -47,8 +47,8 @@ export interface ClientSettingsScope<T> {
   set(field: string, value: unknown): Promise<void>
 }
 
-/** The settingsScope service: binds namespaces, resolving connection/remote
- *  through the caller's fiber (hence the plugin's own inject list). */
-export interface ClientSettingsScopeBinder {
-  bind<T>(spec: { namespace: string }): ClientSettingsScope<T>
+/** The configForms service (provided by dsh-client-ui-settings): one form per
+ *  Host plugin entry, mirroring the describe document live. */
+export interface ClientConfigForms {
+  get<T>(entryId: string): ClientSettingsScope<T>
 }

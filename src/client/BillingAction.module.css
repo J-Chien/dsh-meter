@@ -20,24 +20,24 @@
   display: inline-flex;
 }
 
-/* ── Trigger: the official stat pill ─────────────────────────────────────
- * 28px tall (plus the content font delta), 28px-radius, 6px/8px padding,
- * 4px gap, tertiary label at the secondary content size. Hover and the open
- * state share the hover fill + secondary label, exactly like the official
- * TurnUsagePanel trigger. */
+/* ── Trigger: the official header-action pill ────────────────────────────
+ * 22px tall at 12px/22px type with a 14px icon — the exact metrics of the
+ * adjacent official header labels (标准模式 / model segment), whose row this
+ * button shares. Hover and the open state share the hover fill + secondary
+ * label, like the official pill. */
 .trigger {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  height: calc(28px + var(--billing-font-delta));
-  padding: 6px 8px;
+  height: var(--billing-header-label-height);
+  padding: 0 8px;
   border: 0;
-  border-radius: var(--billing-radius-pill);
+  border-radius: var(--billing-radius-1);
   background: transparent;
   color: var(--billing-text-tertiary);
-  font-size: var(--billing-font-size-secondary);
-  line-height: calc(24px + var(--billing-font-delta));
+  font-size: var(--billing-header-label-size);
+  line-height: var(--billing-header-label-height);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -51,8 +51,8 @@
 
 .triggerIcon {
   flex: none;
-  width: calc(15px + var(--billing-font-delta));
-  height: calc(15px + var(--billing-font-delta));
+  width: 14px;
+  height: 14px;
 }
 
 .badge {
@@ -107,6 +107,9 @@
   border: 0;
   border-radius: var(--billing-radius-3);
   background: var(--billing-surface-float);
+  /* rc.1 menu surface is translucent: the official floating panels pair it
+   * with the menu backdrop blur, otherwise the panel reads semi-transparent. */
+  backdrop-filter: var(--billing-menu-blur);
   box-shadow: var(--billing-elevation-prominent);
   color: var(--billing-text-secondary);
   font-size: 12px;

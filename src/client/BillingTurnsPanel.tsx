@@ -19,7 +19,7 @@
  */
 import { useLayoutEffect, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { IconRefreshOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconRefreshOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives'
 import { formatCacheHitPercent, formatPrice, formatPriceAxis, formatTime, formatTokens } from './format.ts'
 import { getTurns } from './billing-api.ts'
 import { aggregateTurns, type SessionBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
@@ -356,7 +356,7 @@ export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurns
                   })
                 }}
               >
-                <IconRefreshOutline16 size={12} />
+                <IconRefreshOutlineMedium size={12} />
               </button>
             </Tooltip>
             <button type="button" className={css.close} onClick={onClose} aria-label={t('turn.close')}>×</button>

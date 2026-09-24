@@ -6,7 +6,7 @@
  * the services are declared here.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
+import type { SettingsForms } from '@deepseek-ai/dsh-settings'
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import type { SessionStore } from '@deepseek-ai/dsh-session'
@@ -14,7 +14,7 @@ import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 
 /** Host plugin context (structural; the real runtime supplies these). */
 export interface HostContext extends Context {
-  settings: SettingsProvider
+  settings: SettingsForms
   webServer: WebServer
   sessionProjections: SessionProjectionRegistry
   sessions: SessionStore

@@ -4,9 +4,9 @@
  * halves can import it without crossing the bundle purity gate.
  */
 
-/** The settings namespace carrying the price table (host registers it, the
- *  client binds a `settingsScope` to it — keep both sides on this const). */
-export const PRICING_NAMESPACE = 'billing-pricing'
+/** The Host plugin entry id carrying the price table (the entry's volatile
+ *  Config IS the table — keep host watcher and client binding on this). */
+export const BILLING_ENTRY_ID = 'billing'
 
 /**
  * One input/output-length price tier (e.g. z.ai GLM tiered billing).

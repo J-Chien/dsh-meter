@@ -5,6 +5,21 @@
 
 ---
 
+### v0.3.23（适配 deepseek-harness 0.1.7-rc.1：settings 重构迁移 + 浮层半透明修复）
+
+0.1.7-rc.1 把 settings 体系整体重构：**「命名空间注册」（`settings.register(ns, schema)` + `scope.watch`）→「按插件入口的 volatile Config」**（schema 挂在插件上、客户端走 `configForms`、变更走 `settings/document-updated` 事件）。旧写法一上来就撞 `ctx.settings.register is not a function`，本版完成迁移（15 个文件）并顺带修复迁移暴露的浮层样式回归。
+
+- **宿主侧（host/index.ts）**：整张价格表变成一个 volatile ref——`Config = priceTableSchema.volatile()`（schema 默认值 = 内置 `DEFAULT_TABLE`），`apply(ctx, config)` 直接 `config.get()` 读当前表；`scope.watch` → `ctx.on('settings/document-updated')` 重挂投影（volatile 提交原地生效，fiber 不重启）；`settings.configure({auto:false})` 关掉自动生成的通用表单（保留自定义编辑页）。
+- **客户端侧**：`settingsScope.bind({namespace})` → `configForms.get(BILLING_ENTRY_ID)`（`set('providers'/'models')` API 同构，调用点零改动）；设置页挂载点 `settings.plugin.item` → `settings.plugins.tab`（0.1.7 新槽位，带 order/label）；图标 `IconXxxOutline16/14` → `IconXxxOutlineMedium`；已死的 `dsh-client-runtime` → `dsh-client-ui-session`（`dsh.client.inject` 与 peer/dev 依赖同步）。
+- **共享常量**：`PRICING_NAMESPACE='billing-pricing'` → `BILLING_ENTRY_ID='billing'`（host watcher / client 绑定单一事实源）。旧 `settings.yaml` 的 30 个模型 × 4 provider 价格覆盖已迁入 profile 侧 `cordis.patch.yml` 的 billing 配置（仓库外，不进版本库）。
+- **依赖**：17 个 `@deepseek-ai/dsh-*` 0.1.5-rc.2 → 0.1.7-rc.1；cordis 4.0.2 → 4.0.4；schemastery 3.18.2 → 3.18.4；`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 追加 0.1.7-rc.1。
+- **浮层半透明修复（迁移回归）**：0.1.7-rc.1 把 `--dsw-specific-menu` 从实色改成半透明（`#f8f9fa94`），官方规则是凡画该 token 的表面必须同时加 `backdrop-filter: var(--dsw-menu-backdrop-filter)`。卡片/逐轮面板/Tooltip 补上（新增 `--billing-menu-blur` 别名）；逐轮面板叠在深色蒙层上改用**不透明** `--billing-surface-panel`（layer-2，官方 Modal 对话框同款）。
+- **头部入口对齐官方头标**：实测「标准模式」标签 12px/22px 行高/22px 高/6px 圆角/14px 图标，触发按钮从 28px 药丸改为同规格（新增 `--billing-header-label-size/height` token）；悬浮卡片头部三个 icon 统一 `size={14}`（此前 12/12/16 混排）。
+- **修复：卡片齿轮打开设置后卡片仍悬浮**：`BillingPopover` 经 `closeRef` 把 `close()` 暴露给卡片，设置按钮先关卡片再开设置面板。
+- **验证**：`pnpm build` + tsc 零错误、`pnpm test` 全 PASS；浏览器实测卡片/逐轮面板/设置页/头部入口渲染正常。
+
+---
+
 ### v0.3.22（界面：悬浮卡片/微标/逐轮面板对齐官方统计面板样式）
 
 官方 chat 的「本轮用量」弹层（`@deepseek-ai/dsh-client-ui-chat` 的 `TurnUsagePanel` + `stat-dialog.module.css`，rc.2 版）把弹层样式整体翻新了：字号、颜色梯、单位、显示方式都换了。本版把插件的三个客户端表面按同一套规格重做，**只动样式与文案，不动任何口径/数据**。

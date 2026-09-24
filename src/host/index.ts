@@ -2,23 +2,26 @@
  * Billing host plugin: per-session cost + token stats with peak-aware
  * pricing, computed from the durable session log and a user-editable price
  * table (per-provider currency, per-model peak windows). Registers:
- *  - a `billing-pricing` settings namespace (defaults + user overrides),
+ *  - the entry's volatile `Config` (the whole price table — defaults +
+ *    user overrides) through the settings describe mirror,
  *  - a `billing` session-projection unit (the fold the UI reads),
  *  - fenced `/billing/api` HTTP routes for the provider catalog, per-turn
  *    detail, and refresh.
  *
- * Price-table reads/writes ride the harness's native settings RPC (served for
- * every registered namespace since rc.7 — no exposure whitelist anymore); the
- * client binds a `settingsScope` to the namespace. The remaining fenced JSON
- * routes cover what the settings RPC does not: the live LLM catalog and
- * on-demand session folds.
+ * Price-table reads/writes ride the harness's native settings transport
+ * (dsh ≥ 0.1.7-rc.1: per-entry volatile Config; the client binds the entry's
+ * form through `configForms`). A volatile-only edit commits in place — the
+ * fiber keeps running and `settings/document-updated` re-mounts the
+ * projection with the new table. The remaining fenced JSON routes cover what
+ * the settings transport does not: the live LLM catalog and on-demand
+ * session folds.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { HostContext } from './context-types.ts'
 import type { SessionBillingStats, PriceTable, ModelPrice, ModelCapability, TurnCost } from '../shared.ts'
-import { PRICING_NAMESPACE, RECENT_TURNS_CAP } from '../shared.ts'
+import { BILLING_ENTRY_ID, RECENT_TURNS_CAP } from '../shared.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from './session-stats.ts'
 import type { BillingFoldState } from './session-stats.ts'
 import { subagentsForSession, setSubagentTableSource } from './subagent-stats.ts'
@@ -28,8 +31,8 @@ import { billingFence } from './fence.ts'
 // Host-side `billing` key merge into SessionProjectionStateMap (type-only).
 import type {} from './projection-types.ts'
 
-/** The settings namespace for this plugin (plain lowercase id since dsh 0.1.2-rc.1). */
-export const PRICING_NS = PRICING_NAMESPACE
+/** The plugin's Host entry id (also the settings entry the client binds). */
+export const BILLING_ID = BILLING_ENTRY_ID
 
 /** Schemastery schema for the price table (per-provider currency + model rows). */
 const tierSchema = z.object({
@@ -75,9 +78,18 @@ const providerCurrencySchema = z.object({
 })
 
 const priceTableSchema = z.object({
-  providers: z.dict(providerCurrencySchema).default({}),
-  models: z.array(modelPriceSchema).default([]),
+  providers: z.dict(providerCurrencySchema).default(DEFAULT_TABLE.providers),
+  models: z.array(modelPriceSchema).default(DEFAULT_TABLE.models),
 })
+
+/** The billing entry's Config: the whole price table as ONE volatile ref
+ *  (dsh ≥ 0.1.7-rc.1 settings model). The default IS the built-in table, so
+ *  an entry without user overrides resolves to DEFAULT_TABLE; the settings
+ *  UI edits it live (volatile) and the host reads `config.get()`. */
+export const Config = priceTableSchema.volatile() as unknown as z<PriceTable, PriceTable, 'volatile'>
+
+/** The resolved price-table ref handed to apply (whole-object volatile). */
+export type PriceTableConfig = { get(): PriceTable }
 
 /** The fold state the projection unit drives (header + stats). */
 export interface BillingProjectionState extends BillingFoldState {}
@@ -120,17 +132,14 @@ const STATE_VERSION_BASE = 8
  * The billing host plugin.
  * @param ctx - host plugin context.
  */
-export function apply(ctx: HostContext): void {
+export function apply(ctx: HostContext, config: PriceTableConfig): void {
   // Resolved price table in a mutable holder; the projection unit's closures
   // always read the CURRENT table (settings-change aware).
-  const holder: { table: PriceTable } = { table: freezeTable(DEFAULT_TABLE) }
+  const holder: { table: PriceTable } = { table: freezeTable(config.get()) }
 
-  // Settings namespace: built-in table as the composition `base`; users
-  // override via the settings page (through our own fenced routes).
-  const scope = ctx.settings.register<typeof PRICING_NS, PriceTable>(PRICING_NS, priceTableSchema, {
-    base: DEFAULT_TABLE,
-    applies: 'live',
-  })
+  // Keep the native settings UI off the auto-generated generic form: the
+  // client contributes its own billing settings tab.
+  ctx.settings.configure({ auto: false }, ctx.fiber)
 
   // Projection unit: folds the log to billing stats. Recompute = dispose +
   // re-register, which drops every session's cached cell so the next read
@@ -141,7 +150,7 @@ export function apply(ctx: HostContext): void {
   const mountProjection = (): void => {
     disposeProjection?.()
     disposeProjection = undefined
-    holder.table = freezeTable(scope.get())
+    holder.table = freezeTable(config.get())
     // The wire view a client consumes is the fold's `stats` half; the fold's
     // persisted state carries `{config, stats}`. dsh ≤ 0.1.0-rc.7 validated
     // the VIEW with a top-level `schema`; dsh ≥ 0.1.1-rc.1 validates the
@@ -256,7 +265,11 @@ export function apply(ctx: HostContext): void {
     }
   })
 
-  ctx.effect(() => scope.watch(() => mountProjection()), 'billing: price-table watcher')
+  // A volatile price-table edit commits in place without restarting this
+  // fiber; the settings document change is the re-mount signal.
+  ctx.effect(() => ctx.on('settings/document-updated', (ns: string) => {
+    if (ns === BILLING_ENTRY_ID) mountProjection()
+  }), 'billing: price-table watcher')
 
   // Background subagent warming prices with the SAME table the route serves
   // (the holder updates on settings changes and refresh).
@@ -303,7 +316,7 @@ export function apply(ctx: HostContext): void {
             // Sync the table and fold only the requested session. The
             // settings watcher already re-mounts the projection on price
             // changes; a card refresh must not drop every session's cell.
-            holder.table = freezeTable(scope.get())
+            holder.table = freezeTable(config.get())
             writeOk(res, refreshSession(ctx, payload, holder.table))
             break
           }

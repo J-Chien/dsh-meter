@@ -36,6 +36,11 @@
   --billing-motion-fast: 120ms;
   --billing-motion-medium: 160ms;
   --billing-motion-slow: 240ms;
+  /* The official header-action label metrics (标准模式 / model segment):
+   * fixed 12px/22px with a 14px icon — the billing header trigger mirrors
+   * them because it shares the header actions row. */
+  --billing-header-label-size: 12px;
+  --billing-header-label-height: 22px;
 }
 
 /* ── Theme-dependent aliases (resolve --dsw-* on body, live per theme) ── */
@@ -46,6 +51,11 @@ body {
   --billing-surface-raised: var(--dsw-alias-bg-layer-1);
   --billing-surface-mask: var(--dsw-alias-bg-mask-1);
   --billing-mask-blur: var(--dsw-mask-blur);
+  /* rc.1 made the menu surface translucent (--dsw-specific-menu); every
+   * surface painting it must ALSO apply the menu backdrop filter — the
+   * official Menu/HoverCard/stat-dialog surfaces pair these two, and a
+   * translucent surface without the blur reads as a washed-out panel. */
+  --billing-menu-blur: var(--dsw-menu-backdrop-filter);
 
   --billing-border-l1: var(--dsw-alias-border-l1);
   --billing-border-l2: var(--dsw-alias-border-l2);

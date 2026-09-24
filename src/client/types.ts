@@ -5,10 +5,11 @@
  * at build, so the bundle purity gate is unaffected.
  */
 import type { SessionBillingStats } from '../shared.ts'
-// Pulls the runtime's SessionStandardProps merge (sessionId, useProjection,
-// useSession) into the program — ui-slots declares the seat empty and only
-// this package fills it.
-import type {} from '@deepseek-ai/dsh-client-runtime/client'
+
+// rc.1 ui-slots' PropsRuntime already carries the standard session props
+// (sessionId, useProjection, useSession) via SessionStandardProps merged by
+// dsh-client-ui-session (the rc.7 dsh-client-runtime merge is gone).
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
   interface SessionProjectionMap {

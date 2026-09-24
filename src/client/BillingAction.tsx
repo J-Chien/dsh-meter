@@ -4,12 +4,12 @@
  * buckets, cache hit rate, per-currency cost (with a 空闲/高峰 split when the
  * models configure peak periods), a refresh button, and a Settings button
  * that opens the settings panel (the price editor is a native
- * `settings.plugin.item` card in the panel's plugins tab).
+ * `settings.plugins.tab` page in the panel's plugins section).
  */
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconDataOutline16, IconListPenOutline16, IconRefreshOutline16, IconSettingsOutline14,
+  IconDataOutlineMedium, IconListPenOutlineMedium, IconRefreshOutlineMedium, IconSettingsOutlineMedium,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, anyPeakActive, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, aggregateTurns, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
@@ -56,8 +56,11 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   // Bumped by the refresh button so the subagent section (route-fetched, not
   // on the projection feed) re-runs its fetch together with the main stats.
   const [subagentsReload, setSubagentsReload] = useState(0)
+  // The popover's close(), exposed to the card body (the settings gear must
+  // dismiss the card before opening the settings panel).
+  const closeCardRef = useRef<(() => void) | null>(null)
 
-  // The price table rides the native settingsScope binding: a save commits the
+  // The price table rides the shared configForms binding (pricing-scope.ts): a
   // Host document, whose update event re-seeds every subscriber — across tabs
   // too, so the peak tag never judges by stale window hours. Undefined while
   // loading or on a remote (non-loopback) browser; the tag just stays hidden.
@@ -107,15 +110,24 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
     <BillingCard sessionId={String(sessionId)} stats={stats} t={t} refreshing={refreshing}
       subagentsReload={subagentsReload}
       onRefresh={() => void doRefresh()}
-      onDetail={() => setTurnsOpen(true)} />
+      onDetail={() => setTurnsOpen(true)}
+      onSettings={() => {
+        // Close the popover BEFORE opening the settings panel — the card is
+        // pinned over the conversation and would otherwise float on top of
+        // the settings page (the sidebar click is programmatic, so the
+        // outside-click dismiss never fires).
+        closeCardRef.current?.()
+        openBillingSettings(stats.currentModel)
+      }} />
   ), [sessionId, stats, t, refreshing, subagentsReload, doRefresh])
 
   return (
     <>
       <BillingPopover
+        closeRef={closeCardRef}
         renderTrigger={open => (
           <button type="button" data-billing-trigger="" className={css.trigger} aria-label={t('trigger.aria')} aria-haspopup="dialog" aria-expanded={open}>
-            <IconDataOutline16 className={css.triggerIcon} />
+            <IconDataOutlineMedium className={css.triggerIcon} />
             <span className={unpriced ? css.unpricedBadge : css.badge}>{badge}</span>
             {hasPeakModels ? (
               <span className={peakNow ? css.peakTag : css.offPeakTag}>
@@ -149,9 +161,12 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
  * surface: crossing the gap keeps the card open (this was a dead zone where
  * the card would close before the pointer reached it).
  */
-function BillingPopover({ renderTrigger, content }: {
+function BillingPopover({ renderTrigger, content, closeRef }: {
   renderTrigger: (open: boolean) => ReactNode
   content: ReactNode
+  /** Filled with the popover's close() so the card body can dismiss itself
+   *  (the settings gear closes the card before opening the settings panel). */
+  closeRef?: MutableRefObject<(() => void) | null>
 }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -169,6 +184,13 @@ function BillingPopover({ renderTrigger, content }: {
     setPinned(false)
     setOpen(false)
   }, [])
+
+  // Publish close() to the caller (card body) once mounted.
+  useEffect(() => {
+    if (closeRef === undefined) return
+    closeRef.current = close
+    return () => { closeRef.current = null }
+  }, [close, closeRef])
 
   const clearHoverTimer = () => {
     if (hoverTimer.current !== null) {
@@ -335,7 +357,7 @@ function BillingPopover({ renderTrigger, content }: {
 /** The hover card body: the official panel frame (title row → 0.5px rule →
  *  label/value details grid) with the billing-only sections folded in below
  *  it, each separated by the same hairline. */
-function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefresh, onDetail }: {
+function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefresh, onDetail, onSettings }: {
   sessionId: string
   stats: SessionBillingStats
   t: (key: BillingKey) => string
@@ -344,6 +366,7 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
   subagentsReload: number
   onRefresh: () => void
   onDetail: () => void
+  onSettings: () => void
 }) {
   const turns = stats.turns ?? []
   const contextRatio = stats.contextWindow !== undefined && stats.lastRequestInputTokens !== undefined
@@ -356,7 +379,7 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
     <div className={css.cardInner}>
       <div className={css.title}>
         <span className={css.titleLabel}>
-          <IconDataOutline16 />
+          <IconDataOutlineMedium />
           {t('card.title')}
         </span>
         {/* Actions sit left of the headline figure so the figure stays flush
@@ -372,7 +395,7 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
               disabled={refreshing}
               onClick={onRefresh}
             >
-              <IconRefreshOutline16 size={12} />
+              <IconRefreshOutlineMedium size={14} />
             </button>
           </Tooltip>
           <Tooltip label={t('card.detail.aria')}>
@@ -382,7 +405,7 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
               aria-label={t('card.detail.aria')}
               onClick={onDetail}
             >
-              <IconListPenOutline16 size={12} />
+              <IconListPenOutlineMedium size={14} />
             </button>
           </Tooltip>
           <Tooltip label={t('settings.open.aria')}>
@@ -390,9 +413,9 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
               type="button"
               className={css.iconButton}
               aria-label={t('settings.open.aria')}
-              onClick={() => { openBillingSettings(stats.currentModel) }}
+              onClick={onSettings}
             >
-              <IconSettingsOutline14 />
+              <IconSettingsOutlineMedium size={14} />
             </button>
           </Tooltip>
         </span>

@@ -1,11 +1,10 @@
 /**
- * The client-wide `settingsScope` binding for the `billing-pricing`
- * namespace, attached once by the client plugin's apply() and shared by the
- * header badge (peak tag) and the settings card (price editor). Module-level
- * like locate.ts: the slot entries share no store seat in this third-party
- * bundle.
+ * The client-wide binding for the billing entry's price-table form, attached
+ * once by the client plugin's apply() and shared by the header badge (peak
+ * tag) and the settings card (price editor). Module-level like locate.ts: the
+ * slot entries share no store seat in this third-party bundle.
  *
- * This is the native rc.7 read/write path for the price table — the binding
+ * This is the native 0.1.7-rc.1 read/write path: `configForms.get('billing')`
  * mirrors the Host document live (settings/document-updated + connection
  * resets), so a save in any tab or window re-seeds every subscriber without
  * the old window-event/localStorage broadcast.
@@ -16,7 +15,7 @@ import type { PriceTable } from '../shared.ts'
 
 let scope: ClientSettingsScope<PriceTable> | undefined
 
-/** Attach the namespace binding (called once from apply). */
+/** Attach the entry form (called once from apply). */
 export function attachPricingScope(bound: ClientSettingsScope<PriceTable>): void {
   scope = bound
 }

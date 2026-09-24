@@ -12,6 +12,9 @@
   border: 1px solid var(--billing-border-l2);
   border-radius: var(--billing-radius-2);
   background: var(--billing-surface-float);
+  /* rc.1 menu surface is translucent: the official menu/tooltip surfaces
+   * pair it with the menu backdrop blur. */
+  backdrop-filter: var(--billing-menu-blur);
   box-shadow: var(--billing-shadow);
   color: var(--billing-text-primary);
   font-family: var(--billing-font-mono);

@@ -1,9 +1,9 @@
 /**
  * Billing client plugin: contributes a persistent session-header action
- * (cost badge + hover card + refresh) and a native settings card (rc.7
- * `settings.plugin.item`, keyed by the `billing-pricing` namespace) for the
- * price table. The plugin is a module-table consumer only — it imports no
- * dsh client package values (platform modules + type-only imports only), so
+ * (cost badge + hover card + refresh) and a native settings tab (0.1.7-rc.1
+ * `settings.plugins.tab`, keyed by the `billing` entry) for the price
+ * table. The plugin is a module-table consumer only — it imports no dsh
+ * client package values (platform modules + type-only imports only), so
  * its bundle passes the client purity gate as a third-party package.
  */
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
@@ -17,7 +17,7 @@ import { BillingSettingsCard } from './BillingSettings.tsx'
 import type { BillingSettingsInjected, BillingSettingsCardProps } from './BillingSettings.tsx'
 import type { ClientContext } from './context-types.ts'
 import { attachPricingScope } from './pricing-scope.ts'
-import { PRICING_NAMESPACE } from '../shared.ts'
+import { BILLING_ENTRY_ID } from '../shared.ts'
 import type { PriceTable } from '../shared.ts'
 import { NS, zh, en, type BillingKey } from './locales.ts'
 
@@ -25,15 +25,15 @@ export type { BillingActionProps } from './BillingAction.tsx'
 export type { BillingSettingsCardProps } from './BillingSettings.tsx'
 
 /**
- * Required services (cordis fiber inject). `connection`/`remote` are resolved
- * by the settingsScope binder through THIS fiber, so they must be injected
- * here even though no code touches them directly.
+ * Required services (cordis fiber inject). `configForms` is provided by
+ * dsh-client-ui-settings (composed in the web profile and declared in this
+ * package's dsh.client inject list).
  */
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
+export const inject = ['slots', 'locale', 'configForms']
 
 /**
- * Attach the price-table scope, then register the header action and the
- * native settings card.
+ * Attach the price-table form, then register the header action and the
+ * native settings tab.
  * @param ctx - client plugin context.
  */
 export function apply(ctx: ClientContext): void {
@@ -43,8 +43,8 @@ export function apply(ctx: ClientContext): void {
   const actionInjected = (): BillingActionInjected => ({ t })
 
   // The native read/write path for the price table (badge peak tag + settings
-  // card share it; see pricing-scope.ts).
-  attachPricingScope(ctx.settingsScope.bind<PriceTable>({ namespace: PRICING_NAMESPACE }))
+  // tab share it; see pricing-scope.ts).
+  attachPricingScope(ctx.configForms.get<PriceTable>(BILLING_ENTRY_ID))
 
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions',
@@ -55,11 +55,13 @@ export function apply(ctx: ClientContext): void {
     inject: actionInjected,
   }, BillingAction))
 
-  // Native settings card (rc.7): keyed by the settings namespace, rendered in
-  // the settings panel's plugins tab. Keyed slots take no id/order/label.
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: PRICING_NAMESPACE,
+  // Native settings tab (0.1.7-rc.1): rendered inside the billing plugin's
+  // row in the settings panel's plugins section.
+  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+    name: 'settings.plugins.tab',
+    id: BILLING_ENTRY_ID,
+    order: 10,
+    label: () => t('settings.title'),
     locale: NS,
     inject: (): BillingSettingsInjected => ({ t }),
   }, BillingSettingsCard))

@@ -23,7 +23,9 @@
   padding: 16px;
   border: 0;
   border-radius: var(--billing-radius-3);
-  background: var(--billing-surface-float);
+  /* Opaque layer-2 fill, exactly like the official Modal dialog: the
+   * translucent float surface is unreadable over the dark mask. */
+  background: var(--billing-surface-panel);
   box-shadow: var(--billing-elevation-prominent);
   color: var(--billing-text-secondary);
   font-size: 12px;

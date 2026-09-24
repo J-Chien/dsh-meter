@@ -5,11 +5,11 @@
  * prices and optional peak windows. No manual model entry — models come from
  * the catalog.
  *
- * Rendered as a native `settings.plugin.item` card (deepseek-harness rc.7)
- * inside the settings panel's plugins tab, keyed by the `billing-pricing`
- * namespace. The card owns ALL of its chrome (the tab supplies no props);
- * reads/writes ride the native settings RPC through the shared
- * `settingsScope` binding (pricing-scope.ts) — no bespoke settings routes.
+ * Rendered as a native `settings.plugins.tab` page (deepseek-harness
+ * 0.1.7-rc.1) inside the billing plugin's row in the settings panel's
+ * plugins section. The card owns ALL of its chrome (the tab supplies no
+ * props); reads/writes ride the native settings transport through the shared
+ * `configForms` binding (pricing-scope.ts) — no bespoke settings routes.
  *
  * Prices are stored host-side as PRICE_PRECISION integers but EDITED as
  * "元/M" decimals (type `10.155`, not `1015500`). The price input keeps a
@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   getProviderCatalog,
   type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier, type ProviderCatalogRow, type ModelCapability,
@@ -37,9 +37,9 @@ export interface BillingSettingsInjected {
   t: (key: BillingKey) => string
 }
 
-/** Full props for the billing settings card. The native
- *  `settings.plugin.item` slot is keyed by namespace and supplies no owner
- *  props (no `close`, no `children`) — only what apply injects. */
+/** Full props for the billing settings tab. The native
+ *  `settings.plugins.tab` slot supplies no owner props (no `close`, no
+ *  `children`) — only what apply injects. */
 export type BillingSettingsCardProps = BillingSettingsInjected
 
 /** Per-provider editor state. */
@@ -167,12 +167,12 @@ function scrollModelIntoView(row: HTMLElement): void {
   container.scrollTo({ top: target, behavior: 'smooth' })
 }
 
-/** The billing settings card (native `settings.plugin.item`, rc.7). Chrome
+/** The billing settings tab (native `settings.plugins.tab`, 0.1.7-rc.1). Chrome
  *  mirrors the harness's own PluginCard (header = name + description + dirty
  *  pill + chevron; body = read-only notice + controls + save/discard footer)
  *  so the card reads exactly like a built-in one. */
 export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
-  // Live price-table snapshot from the shared settingsScope binding: saves in
+  // Live price-table snapshot from the shared configForms binding: saves in
   // ANY tab re-seed this, and a host restart/reconnect re-reads it. The
   // editor seeds from it once; afterwards drafts own the state (parity with
   // the old fetch-on-mount page).
@@ -445,7 +445,7 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
           <span className={css.description}>{t('settings.desc')}</span>
         </span>
         {dirty ? <span className={css.pending}>{t('settings.unsaved')}</span> : null}
-        <IconChevronDownOutline14 className={cardOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
+        <IconChevronDownOutlineMedium className={cardOpen ? `${css.chevron} ${css.chevronOpen}` : css.chevron} />
       </button>
 
       {cardOpen ? (
@@ -519,7 +519,7 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onTimezon
         <button type="button" className={css.groupTitle} onClick={onToggle}
           aria-expanded={!collapsed} aria-label={collapsed ? t('settings.expand') : t('settings.collapse')}>
           <span className={css.groupName}>{provider.name} <span className={css.groupId}>({provider.id})</span></span>
-          <IconChevronDownOutline14 className={collapsed ? css.chevron : `${css.chevron} ${css.chevronOpen}`} />
+          <IconChevronDownOutlineMedium className={collapsed ? css.chevron : `${css.chevron} ${css.chevronOpen}`} />
         </button>
         <div className={css.providerMeta}>
           <div className={css.providerTzRow}>

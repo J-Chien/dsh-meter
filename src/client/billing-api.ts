@@ -4,8 +4,8 @@
  * to loopback; the client is served from that same host.
  *
  * The price table itself does NOT transit here: reads/writes ride the
- * harness's native settings RPC via a `settingsScope` binding (see
- * `pricing-scope.ts`). These routes remain for what the settings RPC does
+ * harness's native settings transport via the `configForms` binding (see
+ * `pricing-scope.ts`). These routes remain for what the settings transport
  * not cover: the live LLM catalog and on-demand session folds.
  */
 import type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
