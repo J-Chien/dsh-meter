@@ -1,8 +1,10 @@
 /**
  * Cross-entry "locate a model in the settings card" request. The header card
  * (BillingAction) queues a target before opening the settings panel; the
- * settings card consumes it once it has rendered (the user opens the plugins
- * tab), then expands the provider and scrolls the model row into view.
+ * settings card consumes it once it has rendered — the gear itself selects the
+ * Plugins section and presses the billing tab (settings-nav.ts), so the card
+ * mounts without the user navigating — and then expands the provider group and
+ * scrolls the model row into view.
  * Module-level because the two entries share no store seat in this
  * third-party bundle; a DOM event covers the already-mounted case, the queue
  * covers a card that mounts afterwards.

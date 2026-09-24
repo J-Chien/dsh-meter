@@ -7,10 +7,19 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 
+/** One registered slot entry, as far as cross-entry navigation reads it. */
+export interface ClientSlotEntry {
+  /** Store seat the registrant declared (the settings shell publishes its
+   *  section actions here — see settings-nav.ts). */
+  store?: unknown
+}
+
 /** The slots service face this plugin uses. */
 export interface ClientSlotsService {
   inject(name: string, callback: () => () => void): () => void
   register(options: Record<string, unknown>, component: unknown): () => void
+  /** Registered entries for one slot key (the public inspection snapshot). */
+  entries(key: string): readonly ClientSlotEntry[]
 }
 
 /** The locale service face this plugin uses. */

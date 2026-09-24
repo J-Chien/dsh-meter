@@ -1,8 +1,9 @@
 /**
  * Billing client plugin: contributes a persistent session-header action
- * (cost badge + hover card + refresh) and a native settings tab (0.1.7-rc.1
- * `settings.plugins.tab`, keyed by the `billing` entry) for the price
- * table. The plugin is a module-table consumer only — it imports no dsh
+ * (cost badge + hover card + refresh) whose gear navigates into
+ * 设置 → 内置插件 → 计费价格 (see settings-nav.ts), plus the native
+ * `settings.plugins.tab` page itself (keyed by the `billing` entry) for the
+ * price table. The plugin is a module-table consumer only — it imports no dsh
  * client package values (platform modules + type-only imports only), so
  * its bundle passes the client purity gate as a third-party package.
  */
@@ -17,6 +18,7 @@ import { BillingSettingsCard } from './BillingSettings.tsx'
 import type { BillingSettingsInjected, BillingSettingsCardProps } from './BillingSettings.tsx'
 import type { ClientContext } from './context-types.ts'
 import { attachPricingScope } from './pricing-scope.ts'
+import { attachSettingsNav } from './settings-nav.ts'
 import { BILLING_ENTRY_ID } from '../shared.ts'
 import type { PriceTable } from '../shared.ts'
 import { NS, zh, en, type BillingKey } from './locales.ts'
@@ -45,6 +47,10 @@ export function apply(ctx: ClientContext): void {
   // The native read/write path for the price table (badge peak tag + settings
   // tab share it; see pricing-scope.ts).
   attachPricingScope(ctx.configForms.get<PriceTable>(BILLING_ENTRY_ID))
+
+  // The gear's route into 设置 → 内置插件 → 计费价格: it drives the settings
+  // shell through that slot's store seat (see settings-nav.ts).
+  attachSettingsNav(ctx.slots)
 
   ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
     name: 'conversation.session.header.actions',

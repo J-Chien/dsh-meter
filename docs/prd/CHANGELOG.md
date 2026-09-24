@@ -5,6 +5,22 @@
 
 ---
 
+### v0.3.25（修复「设置」按钮点错控件；齿轮真正自动跳到 设置→内置插件→计费价格）
+
+0.1.7-rc.2 给设置面板的 `sidebar.settings` 槽位加了 **store seat**（rc.1 没有），seat 的 `openSection(id)` 能开面板并直接选中分区——这正是"自动跳转"一直缺的那块拼图。顺手把齿轮点错控件的老 bug 一起修了。
+
+- **修复（真 bug，非 rc.2 回归）**：旧实现取 `[data-slot="sidebar.settings"]` 里的**第一个 `<button>`**。但标准组合下 `settings.launcher` 槽位被 `client-ui-settings-account` 的账户菜单占了，shell 自己那个 `aria-haspopup="dialog"` 的设置按钮**根本没渲染**，于是第一个 button 是左下角**账户菜单触发器**（`aria-haspopup="menu"`）。点「设置」打开的是账户菜单，不是设置面板。rc.1 同样如此——"还是不行"从那时就存在。
+- **新增：自动跳转链路**。齿轮现在按 `seat → 面板 → 分区 → tab` 走完：
+  - **打开面板并选中分区**：经公开快照 `slots.entries('sidebar.settings')` 读 shell 的 store seat，调 `openSection('plugins')`。这是 harness 支持的唯一选段途径（没有设置导航服务；面板的 open/activeId 是 shell 自己的 store 状态）。形状不符的 seat（工厂式、或不是设置 shell 的）会被跳过。
+  - **按中计费 tab**：`settings.plugins.tab` 是分区的**标签页**，而分区只在某个 tab 被选中后才挂载它的面板，所以必须再按一下。tab 按钮 id 是 shell 稳定的 `<tabsId>-tab-<contribution id>` 形状，用后缀 `-tab-billing` 命中（单贡献时无 tablist，等不到就静默放弃）。
+  - **定位模型**：之后交给卡片原有的 locate 逻辑——展开该 provider 分组并把当前模型行滚进视野（队列 + 窗口事件双通道，未变）。
+- **兜底顺序**（seat 不存在/不可用时）：槽位内的 shell 触发按钮 → 被占用时按账户菜单触发器再按它的第一行（该启动器把「设置」排在第一）→ 帧级 `aria-haspopup="dialog"` 扫查（排除会话列，避免重演当年点到「本轮用量」药丸）。后三条只能开面板、不能选分区，注释里写明了。
+- **新增回归测试** `tests/settings-nav-check.ts`（jsdom，5 组）：seat 路径开分区 + 按 tab、槽位内触发按钮优先、被占用的启动器按菜单行、无目标时不抛且保留 locate、形状不符的 seat 绝不被驱动。`test` 拆成 `test:pure` / `test:nav`；jsdom 29 无类型声明，`tests/jsdom.d.ts` 只声明用到的那一小块（不引入 `@types/jsdom`，免得 `prepare` 把成本转嫁给用户）。
+- **tsdown 的 `PLATFORM` 对齐 shell 的 `PLATFORM_MODULES`**（`packages/client/web/src/platform.ts`）：补 `dsh-client-store` / `dsh-client-ui-dockkit`，去掉三个并非平台模块的项。原来若有人从 `dsh-client-store` 取值就会被**打进 bundle**，等于在第一个 store 引擎背后再造一个——正是 store 文档警告的"伪装单例"。
+- **两项排查结论（都不是问题）**：`@deepseek-ai/dsh-client-ui-primitives` 是 shell 的**平台 seed 词**（`platform.ts` 的 `PLATFORM_MODULES` + `seed.ts` 静态导入），`require` 直接命中冻结模块表，**不需要**进 `dsh.client.inject`；`~/.dsh/profiles/node_modules` 是 `npx @deepseek-ai/dsh`（pnpm dlx）09-22 留下的**软链残渣**（指向 `~/Library/Caches/pnpm/dlx/…/@deepseek-ai/dsh@0.1.5-rc.2`，仅 16K），不在 desktop / web 任一 profile 的解析路径里。
+
+---
+
 ### v0.3.24（适配 deepseek-harness 0.1.7-rc.2 + 内置默认价格表新增 wpsai 模型）
 
 0.1.7-rc.2 是 rc.1 的补丁级跟进：客户端包几乎只有版本号变化，**没有移除任何本插件用到的导出**，所以本版没有 API 迁移，只做三件事——把 peer 版本区间放开、修掉一处会随 session 格式版本漂移的测试夹具、补默认价格表。

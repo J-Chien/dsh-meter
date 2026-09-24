@@ -14,14 +14,20 @@ import { transform } from 'lightningcss'
 
 const ID = 'dsh-meter'
 
-/** Externals resolved from the loader module table (platform modules). */
+/**
+ * Externals resolved from the frozen module table (platform modules). This list
+ * MUST mirror the shell's `PLATFORM_MODULES`
+ * (`packages/client/web/src/platform.ts`): those words are the only entities
+ * the shell shares as instances, so bundling one instead of requiring it would
+ * duplicate that module's identity — for `dsh-client-store` that means a second
+ * store engine behind a seat read through the first one.
+ */
 const PLATFORM = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-ui-attachment',
-  '@deepseek-ai/dsh-client-schema-form',
+  '@deepseek-ai/dsh-client-ui-dockkit',
 ]
 
 /** Node-half externals: every peer/dsh dependency resolves at runtime. */

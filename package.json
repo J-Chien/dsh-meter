@@ -1,6 +1,6 @@
 {
   "name": "dsh-meter",
-  "version": "0.3.24",
+  "version": "0.3.25",
   "description": "Per-session billing plugin for DeepSeek Harness: token buckets, cache hit rate, and peak-aware cost in the session header + a price-table settings page",
   "type": "module",
   "main": "lib/index.js",
@@ -25,7 +25,9 @@
     "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsdown",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
     "prepare": "tsc -p tsconfig.build.json && tsdown",
-    "test": "node --disable-warning=ExperimentalWarning tests/pure-check.ts",
+    "test": "node --disable-warning=ExperimentalWarning tests/pure-check.ts && node --disable-warning=ExperimentalWarning tests/settings-nav-check.ts",
+    "test:pure": "node --disable-warning=ExperimentalWarning tests/pure-check.ts",
+    "test:nav": "node --disable-warning=ExperimentalWarning tests/settings-nav-check.ts",
     "dev:watch": "tsdown --watch"
   },
   "files": [

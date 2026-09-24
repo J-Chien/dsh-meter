@@ -16,7 +16,7 @@ import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, anyPeakActi
 import { formatCacheHitPercent, formatCompactTok, formatExactTok, formatPrice, formatTime, formatTokens } from './format.ts'
 import { refreshSessionStats, getSubagentsStats } from './billing-api.ts'
 import { usePricingTable } from './pricing-scope.ts'
-import { requestLocateModel } from './locate.ts'
+import { openBillingSettings } from './settings-nav.ts'
 import type {} from './types.ts'
 import { type BillingKey } from './locales.ts'
 import { BillingTurnsPanel } from './BillingTurnsPanel.tsx'
@@ -845,40 +845,4 @@ function badgeText(stats: SessionBillingStats, t: (key: BillingKey) => string): 
   if (entries.length === 0) return formatPrice(0, '¥')
   // Every currency is shown, never mixed: `¥1.20 + $0.35`.
   return entries.map(([code, units]) => formatPrice(units, currencySymbol(code))).join(' + ')
-}
-
-/**
- * Open the DSH settings panel, and — when a current model is known — queue a
- * locate request. The billing price editor is a native `settings.plugin.item`
- * card inside the panel's plugins tab (rc.7): the harness exposes no
- * navigation API to select a tab or expand a card (both are component-local
- * state), so the gear can only open the panel; the queued locate is consumed
- * by the card when it mounts (the user opens the plugins tab), expanding the
- * provider and scrolling the model row into view.
- *
- * The trigger is resolved by SLOT, not by inverse-elimination. The old rule
- * ("a `aria-haspopup="dialog"` button that is neither ours nor labelled")
- * silently became wrong when the chat added the turn-usage pill: that pill
- * opens a dialog, lives in the transcript and carries no `aria-label`, so the
- * gear clicked IT and opened 「本轮用量」 instead of the settings panel. The
- * sidebar's settings entry is the stable hook (the same `data-slot` anchor
- * better-sidebar's stylesheet uses), and the fallback keeps the search OUT of
- * the conversation column, where those unlabeled dialog pills live.
- *
- * @param model - the model to expand once the settings card mounts.
- */
-function openBillingSettings(
-  model?: { provider: string; model: string },
-): void {
-  const slot = document.querySelector('[data-slot="sidebar.settings"]')
-  const trigger = slot instanceof HTMLButtonElement
-    ? slot
-    : slot?.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')
-      ?? slot?.querySelector<HTMLButtonElement>('button')
-      ?? [...document.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]')]
-        .find(b => !b.hasAttribute('data-billing-trigger')
-          && b.closest('[data-slot^="conversation."]') === null)
-  if (trigger === undefined || trigger === null) return
-  if (model !== undefined) requestLocateModel(model)
-  trigger.click()
 }
