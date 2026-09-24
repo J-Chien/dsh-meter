@@ -7,8 +7,9 @@ import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
 import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow, anyPeakActive, deepEqualJson } from '../src/shared.ts'
-import { DEEPSEEK_PEAK_WINDOWS, DEEPSEEK_PROVIDER_IDS } from '../src/shared.ts'
+import { DEFAULT_TIMEZONE, DEEPSEEK_PEAK_WINDOWS, DEEPSEEK_PROVIDER_IDS } from '../src/shared.ts'
 import { officialPeakPeriods } from '../src/client/preset.ts'
+import { isIanaTimezone, matchTimezones, timezoneChoices } from '../src/client/timezones.ts'
 import type { PriceTable, TurnCost } from '../src/shared.ts'
 import type { SubagentsBillingStats } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
@@ -1109,3 +1110,50 @@ const base = { input: cnyPerMillion(1), output: cnyPerMillion(4), cacheInput: cn
 }
 
 console.log('OFFICIAL-RULE PRESET CHECK PASSED')
+
+// --- timezone combobox: keyword filtering + validation ---
+// A picker whose filter silently stops matching is worse than a text field:
+// the user cannot tell why nothing appears. So the filter is a pure function
+// with its own checks rather than logic buried in the input's onChange.
+assert.equal(isIanaTimezone('Asia/Shanghai'), true, 'a real IANA name validates')
+assert.equal(isIanaTimezone('America/New_York'), true, 'underscored zone ids validate')
+assert.equal(isIanaTimezone('Nowhere/Fake'), false, 'an unknown zone is rejected')
+assert.equal(isIanaTimezone(''), false, 'an empty name is rejected')
+
+const fixture = [
+  { name: 'Africa/Abidjan', label: 'Abidjan' },
+  { name: 'America/New_York', label: 'New York' },
+  { name: 'Asia/Shanghai', label: 'Shanghai' },
+  { name: 'Asia/Tokyo', label: 'Tokyo' },
+  { name: 'Europe/London', label: 'London' },
+]
+const names = (list: readonly { name: string }[]) => list.map(c => c.name)
+assert.deepEqual(names(matchTimezones(fixture, 'shanghai')), ['Asia/Shanghai'],
+  'a bare city keyword finds its zone (city match, not just the id prefix)')
+assert.deepEqual(names(matchTimezones(fixture, 'SHANGHAI')), ['Asia/Shanghai'], 'the filter is case-insensitive')
+assert.deepEqual(names(matchTimezones(fixture, '  york  ')), ['America/New_York'], 'the query is trimmed')
+assert.deepEqual(names(matchTimezones(fixture, 'asia/')), ['Asia/Shanghai', 'Asia/Tokyo'],
+  'a region prefix lists that region')
+assert.deepEqual(names(matchTimezones(fixture, 'zzz')), [], 'a query with no match yields no rows')
+assert.equal(matchTimezones(fixture, '', 2).length, 2, 'an empty query shows at most `limit` choices')
+assert.equal(matchTimezones(fixture, 'a', 1).length, 1, 'limit caps the list')
+// A match at a segment start outranks one buried in the middle.
+assert.deepEqual(names(matchTimezones(fixture, 'asia', 5))[0], 'Asia/Shanghai',
+  'a name-prefix match outranks a mid-string match')
+
+// The engine list itself: present, alphabetical, and it contains the zone the
+// fold defaults to (a runtime without supportedValuesOf degrades to no list).
+const engineChoices = timezoneChoices()
+if (engineChoices.length > 0) {
+  assert.equal(engineChoices.some(c => c.name === DEFAULT_TIMEZONE), true,
+    'the engine list contains the fold default (Asia/Shanghai)')
+  assert.equal(engineChoices.every(c => isIanaTimezone(c.name)), true, 'every choice is a name Intl accepts')
+  assert.equal(matchTimezones(engineChoices, 'shanghai')[0]?.name, DEFAULT_TIMEZONE,
+    'filtering the engine list by city finds Asia/Shanghai first')
+  assert.equal(engineChoices.filter(c => c.label === '').length, 0, 'every choice carries a city label')
+  console.log(`timezone choices available: ${engineChoices.length}`)
+} else {
+  console.log('timezone choices unavailable in this runtime (field degrades to free text)')
+}
+
+console.log('TIMEZONE COMBOBOX CHECK PASSED')

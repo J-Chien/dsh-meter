@@ -16,7 +16,7 @@
  * draft string and commits on blur/Enter, so clearing a `0` to type a new
  * number works (an empty field never snaps back to 0 mid-edit).
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconChevronDownOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
@@ -28,6 +28,7 @@ import { pricingScope, usePricingSnapshot } from './pricing-scope.ts'
 import { consumeLocateModel, LOCATE_EVENT, type LocateModelRequest } from './locate.ts'
 import { BillingLabel } from './BillingLabel.tsx'
 import { type BillingKey } from './locales.ts'
+import { isIanaTimezone, matchTimezones, timezoneChoices } from './timezones.ts'
 import { DEFAULT_TIMEZONE, DEEPSEEK_PROVIDER_IDS, WEEKDAY_DAYS, deepEqualJson } from '../shared.ts'
 import { officialPeakPeriods } from './preset.ts'
 import './theme.module.css'
@@ -507,26 +508,23 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onTimezon
   return (
     <div className={css.group}>
       <div className={css.groupHead}>
-        <button type="button" className={css.groupTitle} onClick={onToggle}
-          aria-expanded={!collapsed} aria-label={collapsed ? t('settings.expand') : t('settings.collapse')}>
-          <span className={css.groupName}>{provider.name} <span className={css.groupId}>({provider.id})</span></span>
-          <IconChevronDownOutlineMedium className={collapsed ? css.chevron : `${css.chevron} ${css.chevronOpen}`} />
-        </button>
-        <div className={css.providerMeta}>
-          <div className={css.providerTzRow}>
-            <TimezoneEditor value={provider.timezone} t={t}
-              onChange={onTimezone} />
-          </div>
+        <div className={css.groupTop}>
+          <button type="button" className={css.groupTitle} onClick={onToggle}
+            aria-expanded={!collapsed} aria-label={collapsed ? t('settings.expand') : t('settings.collapse')}>
+            <span className={css.groupName}>{provider.name} <span className={css.groupId}>({provider.id})</span></span>
+            <IconChevronDownOutlineMedium className={collapsed ? css.chevron : `${css.chevron} ${css.chevronOpen}`} />
+          </button>
           {isDeepSeekProvider(provider.id) ? (
-            <div className={css.presetRow}>
-              <button type="button" className={css.presetBtn} onClick={onPreset}
-                title={t('settings.preset.desc')}>
-                {t('settings.preset.label')}
-              </button>
-            </div>
+            <button type="button" className={css.presetBtn} onClick={onPreset}
+              title={t('settings.preset.desc')}>
+              {t('settings.preset.label')}
+            </button>
           ) : null}
-          <label className={css.currencySelect}>
-            <span className={css.miniLabel}>{t('settings.currency.label')}</span>
+        </div>
+        <div className={css.providerMeta}>
+          <TimezoneEditor value={provider.timezone} t={t} onChange={onTimezone} />
+          <label className={css.field}>
+            <span className={css.fieldLabel}>{t('settings.currency.label')}</span>
             <select
               className={css.select}
               value={provider.currency}
@@ -536,8 +534,9 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onTimezon
               <option value="USD">USD ($)</option>
             </select>
           </label>
-          <span className={css.unitHint}>
-            {t('settings.unit.label')}{provider.currencySymbol}/{t('settings.unit.million')}
+          <span className={css.field}>
+            <span className={css.fieldLabel}>{t('settings.unit.label')}</span>
+            <span className={css.unitValue}>{provider.currencySymbol}/{t('settings.unit.million')}</span>
           </span>
         </div>
       </div>
@@ -555,71 +554,124 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onTimezon
   )
 }
 
-/** IANA timezone editor: a text field with a draft commit-on-blur, plus a
- *  quick "machine local" reset. Validates the name against Intl on commit;
- *  invalid input is rejected loudly (field keeps the draft, error shown). */
+/**
+ * Timezone combobox: a text field whose dropdown is the engine's IANA list,
+ * filtered by keyword as you type (`shanghai` → `Asia/Shanghai`). Free text
+ * still commits on blur/Enter, and an unknown name is rejected loudly — the
+ * dropdown is a convenience, not a gate on what the fold can judge.
+ */
 function TimezoneEditor({ value, t, onChange }: {
   value: string | undefined
   t: (key: BillingKey) => string
   onChange: (timezone: string | undefined) => void
 }) {
+  const inputId = useId()
+  const choices = useMemo(() => timezoneChoices(), [])
   const [draft, setDraft] = useState(value ?? '')
   const [error, setError] = useState<string | undefined>(undefined)
-  const [focused, setFocused] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
+  const focused = useRef(false)
   const latest = useRef({ draft, value, onChange })
   latest.current = { draft, value, onChange }
 
+  const matches = useMemo(() => matchTimezones(choices, draft), [choices, draft])
+
   useEffect(() => {
-    if (!focused) setDraft(value ?? '')
-  }, [value, focused])
+    if (!focused.current) setDraft(value ?? '')
+  }, [value])
 
   // Commit the pending draft on unmount (collapse with the field focused).
   useEffect(() => () => {
     const { draft: d, value: v, onChange: oc } = latest.current
     const trimmed = d.trim()
     if (trimmed === '' || trimmed === v) return
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: trimmed })
-      oc(trimmed)
-    } catch {
-      // invalid: drop silently on unmount (no UI to show the error on)
-    }
+    // invalid: drop silently on unmount (no UI left to show the error on)
+    if (isIanaTimezone(trimmed)) oc(trimmed)
   }, [])
 
-  const commit = (): void => {
-    const trimmed = draft.trim()
+  const commit = (candidate: string): void => {
+    const trimmed = candidate.trim()
     if (trimmed === '') {
       setError(undefined)
       setDraft('')
       if (value !== undefined) onChange(undefined)
       return
     }
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: trimmed })
-      setError(undefined)
-      if (trimmed !== value) onChange(trimmed)
-    } catch {
+    if (!isIanaTimezone(trimmed)) {
       setError(t('settings.timezone.invalid'))
+      return
     }
+    setError(undefined)
+    setDraft(trimmed)
+    if (trimmed !== value) onChange(trimmed)
+  }
+
+  const pick = (zone: string): void => {
+    setOpen(false)
+    setActive(0)
+    setDraft(zone)
+    commit(zone)
   }
 
   return (
-    <div className={css.tzField}>
-      <label className={css.miniLabel}>
-        <span>{t('settings.timezone.label')}</span>
+    <div className={css.field}>
+      <label className={css.fieldLabel} htmlFor={inputId}>{t('settings.timezone.label')}</label>
+      <span className={css.tzCombo}>
         <input
+          id={inputId}
           className={css.tzInput}
           type="text"
+          role="combobox"
+          aria-expanded={open && matches.length > 0}
+          aria-controls={`${inputId}-list`}
+          aria-autocomplete="list"
+          autoComplete="off"
           placeholder={DEFAULT_TIMEZONE}
-          aria-label={t('settings.timezone.label')}
           title={t('settings.timezone.hint')}
           value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => { setFocused(false); commit() }}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur() } }}
+          onChange={e => { setDraft(e.target.value); setActive(0); setOpen(true) }}
+          onFocus={() => { focused.current = true; setOpen(true) }}
+          onBlur={() => { focused.current = false; setOpen(false); commit(draft) }}
+          onKeyDown={event => {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              if (matches.length === 0) return
+              event.preventDefault()
+              setOpen(true)
+              const step = event.key === 'ArrowDown' ? 1 : -1
+              setActive(index => (index + step + matches.length) % matches.length)
+              return
+            }
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              const chosen = open ? matches[active] : undefined
+              if (chosen !== undefined) pick(chosen.name)
+              else (event.target as HTMLInputElement).blur()
+              return
+            }
+            if (event.key === 'Escape') setOpen(false)
+          }}
         />
-      </label>
+        <IconChevronDownOutlineMedium className={css.tzCaret} size={12} />
+        {open && matches.length > 0 ? (
+          <ul className={css.tzList} role="listbox" id={`${inputId}-list`}>
+            {matches.map((choice, index) => (
+              // The option IS the row: a button nested inside role="option"
+              // would be an interactive element inside an option.
+              <li
+                key={choice.name}
+                role="option"
+                aria-selected={index === active}
+                className={index === active ? `${css.tzOption} ${css.tzOptionActive}` : css.tzOption}
+                // mousedown, not click: the input's blur would close the list first.
+                onMouseDown={event => { event.preventDefault(); pick(choice.name) }}
+              >
+                {choice.name}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </span>
       {error !== undefined ? <span className={css.tzError} role="status">{error}</span> : null}
     </div>
   )

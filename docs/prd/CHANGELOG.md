@@ -5,6 +5,19 @@
 
 ---
 
+### v0.3.27（设置页 provider 头部重排：时区改可搜索下拉，字段一行对齐）
+
+反馈是"错落的排版确实不太好看 / 放有用有必要的"。本版按这个口径重排 provider 头部，同时把时区做成你要的**可输入关键词筛选的下拉**。
+
+- **时区：自由文本框 → 关键词可筛选下拉**。选项取自引擎自己的 `Intl.supportedValuesOf('timeZone')`（本机 418 个）——不手维护时区表，就不会随 tzdata 悄悄漂移。过滤匹配 IANA 名**或城市名**、段首命中优先：输入 `shanghai` 直接命中 `Asia/Shanghai`，输入 `asia/` 列出该区域。键盘 ↑/↓/Enter/Esc 可用；自由文本仍能失焦或回车提交，非法名照旧报错——下拉是便利，不是校验闸门。引擎没有 `supportedValuesOf` 时退化为纯文本框，校验不变。
+- **筛选是纯函数**（[timezones.ts](src/client/timezones.ts) 的 `matchTimezones()`），新增 `TIMEZONE COMBOBOX CHECK`：城市关键词、大小写、首尾空格、区域前缀、无匹配、limit、段首优先，以及引擎列表本身（含默认时区、每个都能被 `Intl` 接受、每个都带城市标签）。选择器的筛选悄悄失效比纯文本框更糟——用户根本不知道为什么不出现选项。
+- **头部重排**：原来是右对齐的一摞——label 在输入框上方的时区列 + 内联 label 的币种 + 一行裸提示 + 一条孤零零的按钮行，三种垂直节奏互不对齐。现在 = **标题行**（名称/展开箭头在左，provider 级动作「按官方规则配置」在右）+ **一行字段**（时区 · 币种 · 单位，同一基线、左对齐，窄了才换行）。单位不再是裸提示，而是与币种并列的带标签字段；按钮从字段流里移出，不再制造第四种节奏。
+- 组合框浮层：绝对定位、`--billing-shadow` 阴影、hover/键盘高亮，`role="listbox"`/`role="option"` + `aria-expanded`/`aria-controls`/`aria-selected`/`aria-autocomplete`，选中用 `mousedown`（否则输入框 blur 先关列表）。设置面板内容区是 `overflow-y: auto`，列表在面板底缘会被裁并随滚动露出——普通内联组合框的固有行为，已在代码注释写明。
+
+验证：`tsc` 两套零错误、`pnpm build` 通过、`pnpm test` 28 组全 PASS；用本机 Chrome 无头 + DSH 自己的 `design-platform.css` 令牌按真实尺寸渲染布局截图（改前/改后各一张），并核对了面板实际宽度（800px，卡片内容区约 700px）下字段确实一行放得下。
+
+---
+
 ### v0.3.26（内置默认价格表补齐 DeepSeek 官方两条路由；修复设置页「应用」按钮）
 
 **价格：按官方价目表（api-docs.deepseek.com/zh-cn/quick_start/pricing，2026-09）**
