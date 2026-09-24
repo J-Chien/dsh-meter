@@ -5,6 +5,18 @@
 
 ---
 
+### v0.3.24（适配 deepseek-harness 0.1.7-rc.2 + 内置默认价格表新增 wpsai 模型）
+
+0.1.7-rc.2 是 rc.1 的补丁级跟进：客户端包几乎只有版本号变化，**没有移除任何本插件用到的导出**，所以本版没有 API 迁移，只做三件事——把 peer 版本区间放开、修掉一处会随 session 格式版本漂移的测试夹具、补默认价格表。
+
+- **兼容性修复（插件装不上的根因）**：`peerDependencies` 里 `@deepseek-ai/dsh-client-ui-session` 被**精确钉死在 `0.1.7-rc.1`**，而 DSH 的安装前置校验（`evaluatePluginCompatibility`，逐条 peer 区间比对运行时 dsh 版本、`includePrerelease: true`）在 0.1.7-rc.2 上直接拒绝安装：`dsh: installation rejected: ... peerDependencies {"@deepseek-ai/dsh-client-ui-session":"0.1.7-rc.1"}`。改为与其余 16 个 peer 一致的 `^0.1.7-rc.2`（caret 区间在 `includePrerelease` 下同时接受 rc.2 与后续 0.1.7/0.1.x）；peer/dev 依赖与 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 统一升到 0.1.7-rc.2。
+- **测试夹具跟随 session 格式版本**：`tests/pure-check.ts` 的 `SessionHeader` 假头硬编码 `version: 3`，而 `SESSION_FORMAT_VERSION` 已是 4（rc.1 的 npm 包同样为 4，属既有隐患，`tsc -p tsconfig.tests.json` 一直报 TS2322）。改为 `const SESSION_VERSION: SessionHeader['version'] = 4`，以后上游再升版本这里会**编译报错**，而不是悄悄 mock 一个运行时会拒绝的 header。
+- **rc.1 → rc.2 实际影响面（已逐条核对，均不影响本插件）**：`dsh-client-ui-session / ui-slots / ui-settings-plugins / client-connection / compaction / host-webserver / session-persistence / session-projection / session-projection-cache / settings` 只有版本号变化；`ui-primitives` 删掉无人引用的 `OnboardingSurface`、`Button` 改 `forwardRef`、`Tooltip`/`Menu`/`Modal` 增可选 props；`ui-conversation` 的 `ComposerBarInjected.hooks.stopShortcut`、`ConversationBinding.openTurn` 与 `ui-settings` 的 `SettingsLauncherOwnerProps.settingsOpen` 是**必填新增**，但本插件都不构造这些对象。插件真正依赖的 `conversation.session.header.actions` / `settings.plugins.tab` 两个槽位契约在 rc.2 未变；`request/header` 的 `startsSeries` 语义变化与新增 `developer/message` 事件也不动计费 fold（它只读 `header.config`，未知事件原样透传）。
+- **新增 3 个 wpsai 官方参考价**：`xiaomi/mimo-v2.6-pro`（3/6/0.025）、`xiaomi/mimo-v2.6-flash`（1/2/0.02）、`zhipu/glm-5.3-flashx`（2/7/0.57），均为 1M 上下文、缓存写入「限时免费」（0）的平档价，与既有 wpsai 条目同构。未配置价格前这些模型显示「未登记价格」并按 0 计价，仅补默认表，不改任何口径/行为。
+- **验证**：`tsc --noEmit`（`tsconfig.json` + `tsconfig.tests.json` 两套）零错误、`pnpm build` 通过、`pnpm test` 全 PASS；用 DSH 0.1.7-rc.2 应用里**实际打包的** `evaluatePluginCompatibility` 跑本包 manifest → `undefined`（兼容），对 HEAD 的 0.3.23 manifest 复现出原始拒绝信息。
+
+---
+
 ### v0.3.23（适配 deepseek-harness 0.1.7-rc.1：settings 重构迁移 + 浮层半透明修复）
 
 0.1.7-rc.1 把 settings 体系整体重构：**「命名空间注册」（`settings.register(ns, schema)` + `scope.watch`）→「按插件入口的 volatile Config」**（schema 挂在插件上、客户端走 `configForms`、变更走 `settings/document-updated` 事件）。旧写法一上来就撞 `ctx.settings.register is not a function`，本版完成迁移（15 个文件）并顺带修复迁移暴露的浮层样式回归。

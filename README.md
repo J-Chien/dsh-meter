@@ -79,13 +79,13 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-meter
 npx @deepseek-ai/dsh web
 ```
 
-> 版本要求：v0.3.18 起 peer 依赖为 `^0.1.0-rc.7`，请搭配 deepseek-harness **0.1.0-rc.7** 及以上；仍停留在 rc.6 的环境请使用 dsh-meter 0.3.16。
+> 版本要求：v0.3.24 起 peer 依赖为 `^0.1.7-rc.2`，请搭配 deepseek-harness **0.1.7-rc.2** 及以上；仍停留在 0.1.7-rc.1 / 0.1.5-rc.2 的环境请分别使用 dsh-meter 0.3.23 / 0.3.21。安装前 DSH 会按 peer 区间校验运行时版本，区间不匹配会直接拒绝安装（不是警告）。
 
 也可以从源码目录或 tarball 安装：
 
 ```sh
 npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter            # 源码目录
-npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-0.3.18.tgz  # pnpm pack 产物
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-0.3.24.tgz  # pnpm pack 产物
 ```
 
 `plugin add` 会自动初始化 profile、`pnpm install`（`prepare` 脚本自动构建 `lib/`）并把 `dsh-meter` 追加进 `dsh.profile.bundles`。

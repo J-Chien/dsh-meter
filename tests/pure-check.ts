@@ -845,8 +845,12 @@ import { discoverSubagentNodes, isDescendantHeader, hasOpenTurn, aggregateSubage
 import type { SessionHeader } from '@deepseek-ai/dsh-session'
 
 const ts = (ms: number) => ms
+// The live logical format version, pinned through the TYPE only: when
+// dsh-session bumps SESSION_FORMAT_VERSION this assignment stops compiling,
+// instead of the fixture silently mocking a header the runtime rejects.
+const SESSION_VERSION: SessionHeader['version'] = 4
 const hdrMeta = (id: string, extra: Partial<SessionHeader> = {}): SessionHeader => ({
-  version: 3, id: id as SessionHeader['id'], createdAt: 1000 + id.length, isSeeded: false, // session format V3
+  version: SESSION_VERSION, id: id as SessionHeader['id'], createdAt: 1000 + id.length, isSeeded: false, // session format V4
   ...extra,
 })
 
