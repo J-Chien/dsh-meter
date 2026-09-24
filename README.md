@@ -101,7 +101,7 @@ pnpm verify   # typecheck + build + smoke（跑已构建产物）+ 全部测试
 
 ```sh
 npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter            # 源码目录
-npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-0.3.24.tgz  # pnpm pack 产物
+npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-<version>.tgz  # pnpm pack 产物
 ```
 
 `plugin add` 会自动初始化 profile、`pnpm install`（`prepare` 脚本自动构建 `lib/`）并把 `dsh-meter` 追加进 `dsh.profile.bundles`。
