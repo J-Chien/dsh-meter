@@ -7,6 +7,8 @@ import { PRICE_PRECISION, priceTokens, effectivePrice, inPeakWindow, formatPrice
 import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from '../src/host/session-stats.ts'
 import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow, anyPeakActive, deepEqualJson } from '../src/shared.ts'
+import { DEEPSEEK_PEAK_WINDOWS, DEEPSEEK_PROVIDER_IDS } from '../src/shared.ts'
+import { officialPeakPeriods } from '../src/client/preset.ts'
 import type { PriceTable, TurnCost } from '../src/shared.ts'
 import type { SubagentsBillingStats } from '../src/shared.ts'
 import { assertEmptyBillingStats } from '../src/invariant.ts'
@@ -973,3 +975,137 @@ assert.equal(deepEqualJson(tableA, tableB), true, 'whole-table round-trip with s
 assert.equal(deepEqualJson(tableA, { ...tableB, models: [] }), false, 'dropped models are detected')
 
 console.log('SUBAGENT BILLING CHECK PASSED')
+
+// --- DeepSeek official/account default rows ---
+// DeepSeek's own API bills by clock: the published 空闲时段 rate is the model's
+// base price and 高峰时段 doubles it. Peak is Beijing time (Mon–Fri 09:00–12:00
+// and 14:00–18:00); weekends are off-peak. Both of its routes — the API-key
+// `deepseek-official` and the signed-in `deepseek-account` — are the same
+// upstream service against the same list, so both must carry the same rows.
+// Source: api-docs.deepseek.com/zh-cn/quick_start/pricing (2026-09).
+const MON_PEAK_1 = at('2026-08-17T10:00:00+08:00')
+const MON_BETWEEN = at('2026-08-17T13:00:00+08:00')
+const MON_OFF = at('2026-08-17T20:00:00+08:00')
+const SAT_PEAK_HOURS = at('2026-08-15T10:00:00+08:00')
+
+for (const provider of ['deepseek-official', 'deepseek-account']) {
+  assert.equal(t.providers[provider]?.currency, 'CNY', `${provider} bills in CNY`)
+  // No provider names a timezone: the peak assertions below only hold if the
+  // fold's Asia/Shanghai fallback is what judges these windows.
+
+  // Flash (V4.1-Flash): 空闲 1/4/0.02 · 高峰 2/8/0.04.
+  const flashOff = effectivePrice(t, provider, 'deepseek-flash', undefined, MON_OFF)
+  assert.equal(flashOff.found, true, `${provider} prices deepseek-flash`)
+  assert.equal(flashOff.period, 'off-peak', `${provider} deepseek-flash is off-peak at 20:00`)
+  assert.equal(flashOff.input, cnyPerMillion(1), `${provider} deepseek-flash off-peak input 1/M`)
+  assert.equal(flashOff.output, cnyPerMillion(4), `${provider} deepseek-flash off-peak output 4/M`)
+  assert.equal(flashOff.cacheInput, cnyPerMillion(0.02), `${provider} deepseek-flash off-peak cache-hit 0.02/M`)
+  assert.equal(flashOff.cacheWrite, 0, `${provider} deepseek-flash bills no separate cache write`)
+  const flashPeak = effectivePrice(t, provider, 'deepseek-flash', undefined, MON_PEAK_1)
+  assert.equal(flashPeak.period, 'peak', `${provider} deepseek-flash is peak at Mon 10:00 Beijing`)
+  assert.equal(flashPeak.input, cnyPerMillion(2), `${provider} deepseek-flash peak input 2/M`)
+  assert.equal(flashPeak.output, cnyPerMillion(8), `${provider} deepseek-flash peak output 8/M`)
+  assert.equal(flashPeak.cacheInput, cnyPerMillion(0.04), `${provider} deepseek-flash peak cache-hit 0.04/M`)
+  assert.equal(effectivePrice(t, provider, 'deepseek-flash', undefined, MON_BETWEEN).period, 'off-peak',
+    `${provider} the 13:00 gap between the two peak windows is off-peak`)
+  assert.equal(effectivePrice(t, provider, 'deepseek-flash', undefined, SAT_PEAK_HOURS).period, 'off-peak',
+    `${provider} weekends are off-peak all day`)
+
+  // Pro: 空闲 4.5/13.5/0.15 · 高峰 9/27/0.3.
+  const proOff = effectivePrice(t, provider, 'deepseek-v4-pro', undefined, MON_OFF)
+  assert.equal(proOff.input, cnyPerMillion(4.5), `${provider} deepseek-v4-pro off-peak input 4.5/M`)
+  assert.equal(proOff.output, cnyPerMillion(13.5), `${provider} deepseek-v4-pro off-peak output 13.5/M`)
+  assert.equal(proOff.cacheInput, cnyPerMillion(0.15), `${provider} deepseek-v4-pro off-peak cache-hit 0.15/M`)
+  const proPeak = effectivePrice(t, provider, 'deepseek-v4-pro', undefined, MON_PEAK_1)
+  assert.equal(proPeak.input, cnyPerMillion(9), `${provider} deepseek-v4-pro peak input 9/M`)
+  assert.equal(proPeak.output, cnyPerMillion(27), `${provider} deepseek-v4-pro peak output 27/M`)
+  assert.equal(proPeak.cacheInput, cnyPerMillion(0.3), `${provider} deepseek-v4-pro peak cache-hit 0.3/M`)
+
+  // Retired names DeepSeek still answers with V4.1-Flash, billed at Flash rates:
+  // a session logging an old id must not read as unpriced or as a Pro price.
+  for (const legacy of ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']) {
+    const row = effectivePrice(t, provider, legacy, undefined, MON_OFF)
+    assert.equal(row.found, true, `${provider} prices the retired ${legacy}`)
+    assert.equal(row.input, cnyPerMillion(1), `${provider} ${legacy} carries the Flash input rate`)
+    assert.equal(row.output, cnyPerMillion(4), `${provider} ${legacy} carries the Flash output rate`)
+    assert.equal(effectivePrice(t, provider, legacy, undefined, MON_PEAK_1).input, cnyPerMillion(2),
+      `${provider} ${legacy} carries the Flash peak rate`)
+  }
+}
+
+console.log('DEEPSEEK OFFICIAL/ACCOUNT PRICE CHECK PASSED')
+
+// --- official-rule preset (settings card's 「按官方规则配置」) ---
+// The preset reshapes WHEN peak applies; it must never reshape HOW MUCH. The
+// regression it locks: an earlier version kept only the FIRST weekday window,
+// so pressing it on a correct DeepSeek row deleted 14:00–18:00 and halved the
+// peak coverage — a silent price change dressed as a config tidy-up.
+const weekdayOnly = (startHour: number, endHour: number, days = [1, 2, 3, 4, 5]) => ({
+  startHour, endHour, days, input: cnyPerMillion(2), output: cnyPerMillion(8), cacheInput: cnyPerMillion(0.04),
+})
+const base = { input: cnyPerMillion(1), output: cnyPerMillion(4), cacheInput: cnyPerMillion(0.02), cacheWrite: 0 }
+
+// 1. Both official windows survive, unchanged.
+{
+  const before = [weekdayOnly(9, 12), weekdayOnly(14, 18)]
+  const after = officialPeakPeriods(before, base)
+  assert.equal(after.length, 2, 'preset keeps BOTH official weekday windows')
+  assert.deepEqual(after.map(p => [p.startHour, p.endHour]), [[9, 12], [14, 18]],
+    'preset keeps the official hours, in order')
+  assert.deepEqual(after.map(p => p.input), [cnyPerMillion(2), cnyPerMillion(2)], 'preset never rewrites peak prices')
+}
+
+// 2. A weekday window with a partial day mask is re-masked onto Mon–Fri.
+{
+  const after = officialPeakPeriods([weekdayOnly(9, 12, [1, 2, 3])], base)
+  assert.deepEqual(after[0]?.days, [1, 2, 3, 4, 5], 'preset completes the weekday mask')
+}
+
+// 3. Windows that are not weekday-only are untouched (weekend, all-day), and
+//    with no weekday window present the official pair is seeded beside them.
+{
+  const weekend = { startHour: 9, endHour: 12, days: [0, 6], input: cnyPerMillion(3), output: cnyPerMillion(9), cacheInput: 0 }
+  const allDay = { startHour: 0, endHour: 24, input: cnyPerMillion(3), output: cnyPerMillion(9), cacheInput: 0 }
+  const after = officialPeakPeriods([weekend, allDay], base)
+  assert.deepEqual(after[0], weekend, 'a weekend window is left exactly as it was')
+  assert.deepEqual(after[1], allDay, 'an all-day window (no days) is left exactly as it was')
+  assert.deepEqual(after.slice(2).map(p => [p.startHour, p.endHour]), [[9, 12], [14, 18]],
+    'the official pair is seeded beside them (they carry no weekday window)')
+}
+
+// 4. No weekday window at all → seed the official pair, priced off-peak.
+{
+  const after = officialPeakPeriods([], base, [{ input: cnyPerMillion(1), output: cnyPerMillion(4), cacheInput: cnyPerMillion(0.02) }])
+  assert.deepEqual(after.map(p => [p.startHour, p.endHour]), DEEPSEEK_PEAK_WINDOWS.map(w => [w[0], w[1]]),
+    'a model with no weekday window is seeded with the official pair')
+  assert.deepEqual(after.map(p => p.days), [[1, 2, 3, 4, 5], [1, 2, 3, 4, 5]], 'seeded windows are weekday-scoped')
+  assert.equal(after[0]?.input, base.input, 'seeded windows inherit the off-peak price (no invented price)')
+  assert.equal(after[0]?.tiers?.length, 1, 'seeded windows mirror the base tier structure')
+}
+
+// 5. Pure: the input list and its periods are not mutated.
+{
+  const before = [weekdayOnly(9, 12, [1, 2, 3])]
+  const snapshot = JSON.stringify(before)
+  const after = officialPeakPeriods(before, base)
+  assert.equal(JSON.stringify(before), snapshot, 'preset does not mutate its input')
+  assert.notEqual(after[0], before[0], 'preset returns fresh period objects')
+}
+
+// 6. One source of truth: the built-in DeepSeek rows use the same windows the
+//    preset seeds, and both of DeepSeek's routes are covered.
+{
+  const expected = DEEPSEEK_PEAK_WINDOWS.map(w => `${w[0]}-${w[1]}`).join(',')
+  for (const provider of DEEPSEEK_PROVIDER_IDS) {
+    assert.equal(t.providers[provider] !== undefined, true, `defaults configure ${provider}`)
+    const rows = t.models.filter(m => m.provider === provider)
+    assert.equal(rows.length, 4, `${provider} defaults carry all four model ids`)
+    for (const row of rows) {
+      assert.equal(row.periods?.map(p => `${p.startHour}-${p.endHour}`).join(',') ?? '', expected,
+        `${provider}/${row.model} uses the shared official peak windows`)
+      assert.deepEqual(row.periods?.[0]?.days, [1, 2, 3, 4, 5], `${provider}/${row.model} peak windows are weekdays`)
+    }
+  }
+}
+
+console.log('OFFICIAL-RULE PRESET CHECK PASSED')

@@ -226,13 +226,22 @@
   flex: none;
 }
 
-/* Timezone editor + official-rule preset, stacked under the currency row. */
+/* Timezone editor, under the currency row. */
 .providerTzRow {
   display: flex;
   align-items: flex-end;
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* The official-rule preset gets its OWN row. Sharing the timezone row put an
+   「应用」 button directly beside the timezone input, where it read as that
+   field's own Apply — and, because only DeepSeek's API-key route rendered it,
+   as a field that was missing its Apply everywhere else. */
+.presetRow {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .tzField {

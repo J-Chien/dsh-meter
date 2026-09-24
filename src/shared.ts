@@ -91,9 +91,25 @@ export const DEFAULT_TIMEZONE = 'Asia/Shanghai'
 /** Day-of-week mask for weekdays (0=Sunday … 6=Saturday): Mon–Fri. */
 export const WEEKDAY_DAYS = [1, 2, 3, 4, 5]
 
-/** Provider id of DeepSeek's official API (target of the official-rule
- *  preset button in the settings card). */
+/** Provider id of DeepSeek's official API (the API-key route). */
 export const DEEPSEEK_OFFICIAL_PROVIDER = 'deepseek-official'
+
+/**
+ * Provider ids of DeepSeek's OWN API, in both routes: the API-key route and
+ * the signed-in account route. One upstream service, one price list, one peak
+ * rule — so anything keyed to "official DeepSeek" must accept both, or the
+ * account route silently loses the affordance the API-key route gets.
+ */
+export const DEEPSEEK_PROVIDER_IDS: readonly string[] = [DEEPSEEK_OFFICIAL_PROVIDER, 'deepseek-account']
+
+/**
+ * DeepSeek's published peak windows in the provider's local clock: 09:00–12:00
+ * and 14:00–18:00. The day mask is the caller's (the official rule is
+ * weekdays); everything outside them is 空闲时段, published at half the peak
+ * rate. Single source for the built-in table AND the settings card's
+ * official-rule preset, so the two cannot disagree about what "official" means.
+ */
+export const DEEPSEEK_PEAK_WINDOWS: readonly (readonly [number, number])[] = [[9, 12], [14, 18]]
 
 /** Per-provider currency selection. */
 export interface ProviderCurrency {

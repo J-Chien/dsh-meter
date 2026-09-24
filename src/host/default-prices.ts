@@ -1,20 +1,88 @@
 /**
- * Built-in default price table for the wpsai and zai provider families.
- * Values are the user-supplied official reference prices, in CNY per million
- * tokens (converted to PRICE_PRECISION units at load). These are DEFAULTS —
- * users override them in the settings page; unknown models price at 0.
+ * Built-in default price table for the wpsai, zai, and DeepSeek provider
+ * families. Values are the published official reference prices, in CNY per
+ * million tokens (converted to PRICE_PRECISION units at load). These are
+ * DEFAULTS — users override them in the settings page; unknown models price
+ * at 0.
  *
  * zai (BigModel GLM) bills by length tier: each request's TOTAL input length
  * (uncached + cache read + cache write) and output length pick a price tier
  * for the whole request. Tiers below come from bigmodel.cn/pricing
  * (2026-08); cache write ("缓存存储") is 限时免费 (0).
+ *
+ * DeepSeek's own API bills by clock: the published 空闲时段 (off-peak) rate is
+ * the model's base price and 高峰时段 (peak) doubles it. Peak is Beijing time,
+ * Monday–Friday, 09:00–12:00 and 14:00–18:00; weekends and Chinese public
+ * holidays are off-peak. The holiday calendar is not modelled, so a holiday
+ * request prices at peak — a documented limitation, not a rounding choice.
+ * Source: api-docs.deepseek.com/zh-cn/quick_start/pricing (2026-09).
  */
+import { WEEKDAY_DAYS } from '../shared.ts'
 import { PRICE_PRECISION } from './price.ts'
 import type { ModelPrice, PriceTable } from '../shared.ts'
 
 /** Convert a CNY-per-M price string/number to PRICE_PRECISION integer units. */
 export function cnyPerMillion(value: number): number {
   return Math.round(value * PRICE_PRECISION)
+}
+
+/** One DeepSeek rate triple, CNY per M tokens: [input, output, cache-hit input]. */
+type DeepSeekRate = readonly [number, number, number]
+
+/** DeepSeek peak windows, Beijing time: Mon–Fri 09:00–12:00 and 14:00–18:00. */
+const DEEPSEEK_PEAK_WINDOWS: readonly (readonly [number, number])[] = [[9, 12], [14, 18]]
+
+/** Off-peak and peak rates for the Flash and Pro models. */
+const DEEPSEEK_FLASH: DeepSeekRate = [1, 4, 0.02]
+const DEEPSEEK_FLASH_PEAK: DeepSeekRate = [2, 8, 0.04]
+const DEEPSEEK_PRO: DeepSeekRate = [4.5, 13.5, 0.15]
+const DEEPSEEK_PRO_PEAK: DeepSeekRate = [9, 27, 0.3]
+
+/**
+ * One DeepSeek row: the off-peak rate as the model's base price, plus one
+ * period per peak window carrying the peak rate. Cache WRITE is 0 — DeepSeek's
+ * price list has no separate cache-write line (a write is billed as uncached
+ * input).
+ */
+function deepSeekRow(provider: string, model: string, offPeak: DeepSeekRate, peak: DeepSeekRate): ModelPrice {
+  return {
+    provider,
+    model,
+    input: cnyPerMillion(offPeak[0]),
+    output: cnyPerMillion(offPeak[1]),
+    cacheInput: cnyPerMillion(offPeak[2]),
+    cacheWrite: 0,
+    periods: DEEPSEEK_PEAK_WINDOWS.map(([startHour, endHour]) => ({
+      startHour,
+      endHour,
+      days: [...WEEKDAY_DAYS],
+      input: cnyPerMillion(peak[0]),
+      output: cnyPerMillion(peak[1]),
+      cacheInput: cnyPerMillion(peak[2]),
+      cacheWrite: 0,
+      tiers: [],
+    })),
+  }
+}
+
+/**
+ * Every DeepSeek row for one provider id. Both of DeepSeek's routes are the
+ * same upstream service against the same price list, so both are listed:
+ * `deepseek-official` (API key) and `deepseek-account` (the signed-in account
+ * route).
+ *
+ * `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` are RETIRED names
+ * DeepSeek still answers: it serves them with V4.1-Flash and bills them at
+ * Flash rates, so they carry the Flash row rather than a row of their own.
+ * They exist so a session that logs an old id is not reported as unpriced.
+ */
+function deepSeekRows(provider: string): ModelPrice[] {
+  return [
+    deepSeekRow(provider, 'deepseek-flash', DEEPSEEK_FLASH, DEEPSEEK_FLASH_PEAK),
+    deepSeekRow(provider, 'deepseek-v4-pro', DEEPSEEK_PRO, DEEPSEEK_PRO_PEAK),
+    deepSeekRow(provider, 'deepseek-v4-flash', DEEPSEEK_FLASH, DEEPSEEK_FLASH_PEAK),
+    deepSeekRow(provider, 'deepseek-v4-flash-vision-exp', DEEPSEEK_FLASH, DEEPSEEK_FLASH_PEAK),
+  ]
 }
 
 /** The built-in default model prices (CNY). */
@@ -78,13 +146,21 @@ export const DEFAULT_PRICES: ModelPrice[] = [
       { inputMin: 32_000, inputMax: 128_000, input: cnyPerMillion(1.2), output: cnyPerMillion(8), cacheInput: cnyPerMillion(0.24), cacheWrite: 0 },
     ],
   },
+
+  // DeepSeek's own API (both routes) — see the module doc and deepSeekRows().
+  ...deepSeekRows('deepseek-official'),
+  ...deepSeekRows('deepseek-account'),
 ]
 
-/** The default table (wpsai and zai bill in CNY, ¥). */
+/** The default table: wpsai, zai, and both DeepSeek routes bill in CNY, ¥.
+ *  No provider names a timezone: the fold's fallback IS `Asia/Shanghai`
+ *  (shared.ts), which is the clock both DeepSeek peak windows need. */
 export const DEFAULT_TABLE: PriceTable = {
   providers: {
     wpsai: { currency: 'CNY', currencySymbol: '¥' },
     zai: { currency: 'CNY', currencySymbol: '¥' },
+    'deepseek-official': { currency: 'CNY', currencySymbol: '¥' },
+    'deepseek-account': { currency: 'CNY', currencySymbol: '¥' },
   },
   models: DEFAULT_PRICES,
 }

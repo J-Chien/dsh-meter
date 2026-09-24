@@ -28,7 +28,8 @@ import { pricingScope, usePricingSnapshot } from './pricing-scope.ts'
 import { consumeLocateModel, LOCATE_EVENT, type LocateModelRequest } from './locate.ts'
 import { BillingLabel } from './BillingLabel.tsx'
 import { type BillingKey } from './locales.ts'
-import { DEFAULT_TIMEZONE, DEEPSEEK_OFFICIAL_PROVIDER, WEEKDAY_DAYS, deepEqualJson } from '../shared.ts'
+import { DEFAULT_TIMEZONE, DEEPSEEK_PROVIDER_IDS, WEEKDAY_DAYS, deepEqualJson } from '../shared.ts'
+import { officialPeakPeriods } from './preset.ts'
 import './theme.module.css'
 import css from './BillingSettings.module.css'
 
@@ -87,6 +88,16 @@ function cloneTier(t: PriceTier): PriceTier {
 /** A fresh tier seeded from a block's flat prices (ranges left undefined). */
 function seedTier(input: number, output: number, cacheInput: number, cacheWrite: number): PriceTier {
   return { input, output, cacheInput, cacheWrite }
+}
+
+/**
+ * Whether this provider is one of DeepSeek's own routes. The official-rule
+ * preset belongs to the whole family, not to a single id: keying it to
+ * `deepseek-official` alone left the account route without the button, which
+ * reads as a broken UI rather than as a deliberate limit.
+ */
+function isDeepSeekProvider(id: string): boolean {
+  return DEEPSEEK_PROVIDER_IDS.includes(id)
 }
 
 /** Build the editor rows: catalog providers × their models, seeded with prices. */
@@ -273,42 +284,22 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
   }, [])
 
   /**
-   * Apply the official DeepSeek peak rules to the provider's models: each
-   * model gains/updates a weekday-only peak window (the provider's timezone
-   * also snaps to Asia/Shanghai). Prices are left untouched — the window is
-   * only "which days count as peak", so existing prices carry over. Idempotent:
-   * re-applying replaces any weekday period rather than stacking another.
+   * Apply the official DeepSeek peak rule to the provider's models, and snap
+   * the provider's clock to Asia/Shanghai. Prices are never touched: the
+   * preset only reshapes "which hours/days count as peak", so existing peak
+   * prices carry over, and a model that has no weekday window yet is seeded
+   * with the official pair at its current off-peak rate.
+   *
+   * The transform is `officialPeakPeriods` (preset.ts) so it is testable
+   * without a DOM — the rule it enforces is that EVERY weekday window
+   * survives, since DeepSeek's official rule is two of them.
    */
   const applyOfficialPreset = useCallback((providerId: string): void => {
     if (editor?.status !== 'ready') return
-    const weekdays = [...WEEKDAY_DAYS]
     patchProvider(providerId, p => ({
       ...p,
       timezone: DEFAULT_TIMEZONE,
-      models: p.models.map(m => {
-        const periods = m.periods.map(clonePeriod)
-        // Replace any existing weekday (Mon–Fri) period with the official one;
-        // keep non-weekday periods (a weekend/all-day window still applies).
-        const rest = periods.filter(period => {
-          if (period.days === undefined || period.days.length === 0) return true
-          return !period.days.every(d => weekdays.includes(d))
-        })
-        const existing = periods.find(period =>
-          period.days !== undefined && period.days.length > 0 && period.days.every(d => weekdays.includes(d)))
-        const window: PeakPeriod = existing !== undefined
-          ? { ...clonePeriod(existing), days: weekdays }
-          : {
-              startHour: 22,
-              endHour: 6,
-              days: weekdays,
-              input: m.input,
-              output: m.output,
-              cacheInput: m.cacheInput,
-              cacheWrite: m.cacheWrite,
-              tiers: m.tiers.map(tier => seedTier(m.input, m.output, m.cacheInput, m.cacheWrite)),
-            }
-        return { ...m, periods: [...rest, window] }
-      }),
+      models: p.models.map(m => ({ ...m, periods: officialPeakPeriods(m.periods, m, m.tiers) })),
     }))
   }, [editor, patchProvider])
 
@@ -525,13 +516,15 @@ function ProviderGroup({ provider, collapsed, t, onToggle, onCurrency, onTimezon
           <div className={css.providerTzRow}>
             <TimezoneEditor value={provider.timezone} t={t}
               onChange={onTimezone} />
-            {provider.id === DEEPSEEK_OFFICIAL_PROVIDER ? (
+          </div>
+          {isDeepSeekProvider(provider.id) ? (
+            <div className={css.presetRow}>
               <button type="button" className={css.presetBtn} onClick={onPreset}
                 title={t('settings.preset.desc')}>
-                {t('settings.preset.apply')}
+                {t('settings.preset.label')}
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
           <label className={css.currencySelect}>
             <span className={css.miniLabel}>{t('settings.currency.label')}</span>
             <select
