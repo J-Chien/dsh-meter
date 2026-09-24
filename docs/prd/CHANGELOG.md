@@ -5,6 +5,23 @@
 
 ---
 
+### v0.3.28（价格表配置文件 + 自检 CLI + 冒烟测试）
+
+目标：别的用户给 Agent 一张截图、一个链接，就能直接把价格写进配置，不必在设置页一格格点；并把"冒烟 + 测试用例"补齐。
+
+- **新增 Agent 可写的价格文件**：默认 `$DSH_HOME/dsh-meter/prices.yaml`（入口配置 `priceFile` 可改；支持绝对路径、`~/`、相对 DSH home）。格式 YAML/JSON，**正文就是价格表本身**；单位是**元/百万 tokens**（与价目页、设置页同一个数字），内部 1e-5 整数单位刻意不暴露——任何价格 > 100000/M 判为"抄了内部单位"，**整个文件拒收**。
+- **三层优先级：显式配置（profile patch / 设置页保存）> 价格文件 > 内置默认**，按行（provider+model+effort）生效。"显式"取自 `settings.describe()` 的 `base`/`user` 两个原始层——resolved 配置分不出用户的航和内置默认行。于是：Agent 写的文件能覆盖内置默认，却不会被一次 GUI 保存悄悄吃掉；显式的行也不会被文件悄悄改价。设置卡片会显示「价格表来自配置文件 … · N 行生效 · M 行被显式配置覆盖」，不再有隐形来源。
+- **坏文件不拖垮插件**：加载永不抛异常；任何错误 → 整文件忽略、回退内置/显式表、写日志（`billing: price file ignored — …`）、设置卡片显示红字。拒收条件：单位超限、重复行、非法 IANA 时区、空表、字段缺失/越界、YAML 语法错、顶层出现 `id`/`name`/`config`（贴了 patch 条目）。
+- **改文件不用重启**：刷新路由重读文件；**并且**价格真变了时重挂投影，让 `stateVersion` 带上新表 revision——手工编辑文件不会触发 `settings/document-updated`，不重挂就可能让按旧价折出的 checkpoint 复活，这正是 revision 要防的事。
+- **自检 CLI** `scripts/check-prices.mjs`（bin：`dsh-meter-prices`）：用**插件同一个加载器**校验，并打印每行在周一 10:00 / 13:00 / 15:00 / 周六 10:00（北京时间）的有效价，便于把抄来的数字逐格对回页面；支持 `--json` / `--at`，退出码 0 通过 / 1 文件有问题 / 2 跑不起来。
+- **配置说明** [docs/CONFIGURING.md](CONFIGURING.md)：格式规范（字段、单位、上限保护、`tiers` 下标对齐）、三个配方（给链接 / 给截图 / 只给模型名，含查路由 id 的 catalog 命令）、强制自检、回报模板、反模式（不发明价格、不平均、不改 patch、**节假日未建模**要如实说明）、排错表、计价口径。附可运行示例 [docs/examples/prices.deepseek.yaml](examples/prices.deepseek.yaml)。
+- **测试**（`pnpm verify` = typecheck + build + smoke + test）：
+  - [tests/price-file-check.ts](../tests/price-file-check.ts)（11 组）：官方价换算与精度、JSON 输入、**原始单位整行拒收**（含只有大字段超限时才暴露的行）、patch 条目误贴、缺字段/越界/语法错/空表、重复行与未声明 provider、时区拼错、路径解析（默认/DSH_HOME/`~`/相对）、合并语义、ENOENT 非错误。
+  - [tests/smoke.ts](../tests/smoke.ts)（跑**已构建产物**）：宿主 bundle 加载 → 注册 `/billing/api` 与 `billing` 投影 → **真跑一次 1M token 请求**验证三层计价、坏文件降级、文件编辑后由运行中的投影计新价且投影被重挂；客户端 bundle 走 `window.__ModuleLoader__` 交接、声明 `inject`、注册两个槽位。
+  - 顺带修掉测试自身一个**恒真断言**（`typeof x, 'function' || …` 逗号写错，被 `tsc` 抓到）——正好说明为什么不能只靠"看起来通过"。
+
+---
+
 ### v0.3.27（设置页 provider 头部重排：时区改可搜索下拉，字段一行对齐）
 
 反馈是"错落的排版确实不太好看 / 放有用有必要的"。本版按这个口径重排 provider 头部，同时把时区做成你要的**可输入关键词筛选的下拉**。

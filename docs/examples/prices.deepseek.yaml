@@ -1,0 +1,60 @@
+# dsh-meter 价格表示例：DeepSeek 自家 API 的两条路由
+#
+# 单位 = 元 / 百万 tokens —— 就是价目页和设置页显示的那个数字。
+# 不要把设置页/patch 里的内部整数（1 元/M = 100000）抄进来：校验器会直接拒收。
+#
+# 数据来源：https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+# 空闲价 = 高峰价的一半；高峰 = 北京时间周一至周五 09:00-12:00、14:00-18:00。
+# 检查：node scripts/check-prices.mjs docs/examples/prices.deepseek.yaml
+providers:
+  deepseek-official:
+    currency: CNY
+    currencySymbol: '¥'
+    timezone: Asia/Shanghai
+  deepseek-account: # 同一上游服务、同一价目表，因此同价
+    currency: CNY
+    currencySymbol: '¥'
+    timezone: Asia/Shanghai
+
+models:
+  # 规范模型名。空闲 1/4/0.02，高峰 2/8/0.04。
+  - provider: deepseek-official
+    model: deepseek-flash
+    input: 1
+    output: 4
+    cacheInput: 0.02
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+
+  # 空闲 4.5/13.5/0.15，高峰 9/27/0.3。
+  - provider: deepseek-official
+    model: deepseek-v4-pro
+    input: 4.5
+    output: 13.5
+    cacheInput: 0.15
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }
+
+  # 已下线但仍可调用、由 V4.1-Flash 提供服务并按 Flash 价计费的两个旧名。
+  - { provider: deepseek-official, model: deepseek-v4-flash, input: 1, output: 4, cacheInput: 0.02 }
+  - { provider: deepseek-official, model: deepseek-v4-flash-vision-exp, input: 1, output: 4, cacheInput: 0.02 }
+
+  # deepseek-account 与 deepseek-official 同价（同一价目表）。
+  - provider: deepseek-account
+    model: deepseek-flash
+    input: 1
+    output: 4
+    cacheInput: 0.02
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+  - provider: deepseek-account
+    model: deepseek-v4-pro
+    input: 4.5
+    output: 13.5
+    cacheInput: 0.15
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }

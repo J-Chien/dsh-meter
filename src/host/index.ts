@@ -20,12 +20,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { HostContext } from './context-types.ts'
-import type { SessionBillingStats, PriceTable, ModelPrice, ModelCapability, TurnCost } from '../shared.ts'
+import type { SessionBillingStats, PriceTable, PriceFileStatus, ModelPrice, ModelCapability, TurnCost } from '../shared.ts'
 import { BILLING_ENTRY_ID, RECENT_TURNS_CAP } from '../shared.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from './session-stats.ts'
 import type { BillingFoldState } from './session-stats.ts'
 import { subagentsForSession, setSubagentTableSource } from './subagent-stats.ts'
 import { DEFAULT_TABLE } from './default-prices.ts'
+import { loadPriceFile, mergeTables, resolvePriceFile } from './price-file.ts'
 import { BillingRouteError, readJsonBody, writeError, writeOk } from './wire.ts'
 import { billingFence } from './fence.ts'
 // Host-side `billing` key merge into SessionProjectionStateMap (type-only).
@@ -77,19 +78,27 @@ const providerCurrencySchema = z.object({
   timezone: z.string().max(64),
 })
 
+/** The entry config: the price table plus the agent-writable file's path. */
+export interface BillingEntryConfig extends PriceTable {
+  /** Price file to overlay on this table; absent → `<dsh home>/dsh-meter/prices.yaml`.
+   *  See price-file.ts and docs/CONFIGURING.md. */
+  priceFile?: string
+}
+
 const priceTableSchema = z.object({
   providers: z.dict(providerCurrencySchema).default(DEFAULT_TABLE.providers),
   models: z.array(modelPriceSchema).default(DEFAULT_TABLE.models),
+  priceFile: z.string(),
 })
 
 /** The billing entry's Config: the whole price table as ONE volatile ref
  *  (dsh ≥ 0.1.7-rc.1 settings model). The default IS the built-in table, so
  *  an entry without user overrides resolves to DEFAULT_TABLE; the settings
  *  UI edits it live (volatile) and the host reads `config.get()`. */
-export const Config = priceTableSchema.volatile() as unknown as z<PriceTable, PriceTable, 'volatile'>
+export const Config = priceTableSchema.volatile() as unknown as z<BillingEntryConfig, BillingEntryConfig, 'volatile'>
 
-/** The resolved price-table ref handed to apply (whole-object volatile). */
-export type PriceTableConfig = { get(): PriceTable }
+/** The resolved entry-config ref handed to apply (whole-object volatile). */
+export type PriceTableConfig = { get(): BillingEntryConfig }
 
 /** The fold state the projection unit drives (header + stats). */
 export interface BillingProjectionState extends BillingFoldState {}
@@ -124,6 +133,43 @@ function tableRevision(table: PriceTable): number {
   return hash >>> 0
 }
 
+/** Identity of one model row: provider + model + optional reasoning effort.
+ *  Mirrors price-file.ts's `rowKey` — the two must agree or the layer order
+ *  would depend on which module asked. */
+function modelRowKey(row: { provider: string; model: string; reasoningEffort?: string }): string {
+  return `${row.provider}\u0000${row.model}\u0000${row.reasoningEffort ?? ''}`
+}
+
+/**
+ * The rows and providers some config layer states explicitly. A layer is the
+ * raw stored value (profile patch or settings document), so a model it does not
+ * mention is a model the user never priced — which is what lets a price file
+ * override the built-in defaults without overriding a deliberate price.
+ * @param layers - raw layers, most binding last (patch, then settings document).
+ * @returns the row keys and provider ids named by those layers.
+ */
+function explicitLayers(layers: readonly unknown[]): { rows: Set<string>; providers: Set<string> } {
+  const rows = new Set<string>()
+  const providers = new Set<string>()
+  for (const layer of layers) {
+    if (typeof layer !== 'object' || layer === null) continue
+    const models = (layer as { models?: unknown }).models
+    if (Array.isArray(models)) {
+      for (const row of models) {
+        if (typeof row !== 'object' || row === null) continue
+        const { provider, model, reasoningEffort } = row as { provider?: unknown; model?: unknown; reasoningEffort?: unknown }
+        if (typeof provider !== 'string' || typeof model !== 'string') continue
+        rows.add(modelRowKey({ provider, model, ...(typeof reasoningEffort === 'string' ? { reasoningEffort } : {}) }))
+      }
+    }
+    const declared = (layer as { providers?: unknown }).providers
+    if (typeof declared === 'object' && declared !== null) {
+      for (const id of Object.keys(declared)) providers.add(id)
+    }
+  }
+  return { rows, providers }
+}
+
 /** Base projection schema version, bumped on fold-state/view shape changes.
  *  8: fold state keeps only header.config; compactions gains tokens/cost. */
 const STATE_VERSION_BASE = 8
@@ -135,7 +181,83 @@ const STATE_VERSION_BASE = 8
 export function apply(ctx: HostContext, config: PriceTableConfig): void {
   // Resolved price table in a mutable holder; the projection unit's closures
   // always read the CURRENT table (settings-change aware).
-  const holder: { table: PriceTable } = { table: freezeTable(config.get()) }
+  const holder: { table: PriceTable } = { table: DEFAULT_TABLE }
+
+  // The price file's last reported state: re-read on every re-mount, but logged
+  // only when the outcome CHANGES, so a file that is simply absent (the common
+  // case) never spams the log and a broken one is reported once per state.
+  let priceFileState: { log: string } | undefined
+  let priceFileStatus: PriceFileStatus = {
+    path: resolvePriceFile(config.get().priceFile), present: false, rows: 0, overridden: 0, errors: [],
+  }
+
+  /**
+   * The effective table, in three layers (docs/CONFIGURING.md states this):
+   *   1. an explicit entry config (profile patch / a settings-page save) — wins;
+   *   2. the price file — beats the built-in defaults, which is what lets an
+   *      agent price a provider the plugin has never heard of;
+   *   3. `DEFAULT_TABLE` — the shipped table.
+   *
+   * "Explicit" is read from the RAW entry options, not from the resolved config:
+   * the schema fills `models`/`providers` with the built-in defaults, so the
+   * resolved value cannot tell a user's row from a shipped one. Without that
+   * distinction a file would either be unable to override a default (file
+   * loses) or silently override a deliberate price (file wins) — neither is
+   * acceptable, so the layer boundary is drawn where the user actually spoke.
+   *
+   * Read fresh on every re-mount, so an agent's file edit lands on the next
+   * refresh rather than needing a restart.
+   */
+  const resolveTable = (): PriceTable => {
+    const entry = config.get()
+    const path = resolvePriceFile(entry.priceFile)
+    const report = loadPriceFile(path)
+
+    // A file that is absent (the normal case) or unusable costs no more than a
+    // failed stat: the settings descriptor is only built when there is a table
+    // to layer, so the common path stays as cheap as it was.
+    if (report.table === undefined) {
+      priceFileStatus = { path, present: report.present, rows: report.rows, overridden: 0, errors: report.errors }
+      const log = report.errors.length > 0 ? `errors:${report.errors.join('|')}` : `none:${path}`
+      if (priceFileState?.log !== log) {
+        for (const error of report.errors) ctx.logger.warn(`billing: price file ignored — ${error}`)
+        for (const note of report.warnings) ctx.logger.warn(`billing: price file — ${note}`)
+        priceFileState = { log }
+      }
+      return freezeTable(entry)
+    }
+
+    // Layer 1 = what the profile patch (`base`) and the settings page (`user`)
+    // state themselves. `describe()` is the supported window onto those layers:
+    // the resolved config cannot tell a user's row from a shipped default,
+    // because the schema fills in the defaults.
+    const descriptor = ctx.settings.describe().find(row => row.ns === BILLING_ENTRY_ID)
+    const explicit = explicitLayers([descriptor?.base, descriptor?.user])
+    const overridden = report.table.models.filter(row => explicit.rows.has(modelRowKey(row))).length
+    priceFileStatus = { path, present: true, rows: report.rows, overridden, errors: [] }
+
+    const log = `ok:${path}:${String(report.rows)}:${String(overridden)}`
+    if (priceFileState?.log !== log) {
+      for (const note of report.warnings) ctx.logger.warn(`billing: price file — ${note}`)
+      ctx.logger.info(`billing: price file ${path} supplies ${String(report.rows)} model row(s)`
+        + (overridden > 0 ? `; ${String(overridden)} are overridden by explicit configuration` : ''))
+      priceFileState = { log }
+    }
+
+    // Layer 2 over layer 3 …
+    let table = mergeTables(entry, report.table)
+    // … then layer 1 back on top, for the rows/providers explicit configuration names.
+    const pinnedProviders = Object.fromEntries(
+      Object.entries(entry.providers).filter(([id]) => explicit.providers.has(id)),
+    )
+    const pinnedModels = entry.models.filter(row => explicit.rows.has(modelRowKey(row)))
+    if (pinnedModels.length > 0 || Object.keys(pinnedProviders).length > 0) {
+      table = mergeTables(table, { providers: pinnedProviders, models: pinnedModels })
+    }
+    return freezeTable(table)
+  }
+
+  holder.table = resolveTable()
 
   // Keep the native settings UI off the auto-generated generic form: the
   // client contributes its own billing settings tab.
@@ -150,7 +272,7 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
   const mountProjection = (): void => {
     disposeProjection?.()
     disposeProjection = undefined
-    holder.table = freezeTable(config.get())
+    holder.table = resolveTable()
     // The wire view a client consumes is the fold's `stats` half; the fold's
     // persisted state carries `{config, stats}`. dsh ≤ 0.1.0-rc.7 validated
     // the VIEW with a top-level `schema`; dsh ≥ 0.1.1-rc.1 validates the
@@ -300,7 +422,10 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
         const payload = await readJsonBody(req)
         switch (method) {
           case 'catalog':
-            writeOk(res, await catalog(ctx))
+            // The price-file status rides the catalog: the editor already reads
+            // it on mount, and a file that supplies prices must be visible in
+            // the UI, not just in a log line.
+            writeOk(res, { ...await catalog(ctx), priceFile: priceFileStatus })
             break
           case 'turns':
             writeOk(res, turnsForSession(ctx, payload, holder.table))
@@ -313,10 +438,24 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
             ))
             break
           case 'refresh': {
-            // Sync the table and fold only the requested session. The
-            // settings watcher already re-mounts the projection on price
-            // changes; a card refresh must not drop every session's cell.
-            holder.table = freezeTable(config.get())
+            // Sync the table and fold only the requested session.
+            //
+            // A price-FILE edit emits no `settings/document-updated`, so this
+            // route is the only place the new prices are noticed. When they
+            // actually changed, the projection is re-mounted: its
+            // `stateVersion` carries the table revision, and leaving it stale
+            // would let a checkpoint folded with the OLD prices be replayed as
+            // current — the exact failure that revision exists to prevent.
+            // Otherwise the holder is swapped in place and no other session
+            // loses its cell. (`mountProjection` resolves the table again;
+            // the second read is a stat plus a small parse, and it is what
+            // makes the fresh table the one the re-registered unit closes over.)
+            const previous = tableRevision(holder.table)
+            holder.table = resolveTable()
+            if (tableRevision(holder.table) !== previous) {
+              ctx.logger.info('billing: price table changed — re-mounting the projection')
+              mountProjection()
+            }
             writeOk(res, refreshSession(ctx, payload, holder.table))
             break
           }

@@ -8,9 +8,9 @@
  * `pricing-scope.ts`). These routes remain for what the settings transport
  * not cover: the live LLM catalog and on-demand session folds.
  */
-import type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
+import type { ModelPrice, PeakPeriod, PriceTable, PriceFileStatus, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
 
-export type { ModelPrice, PeakPeriod, PriceTable, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
+export type { ModelPrice, PeakPeriod, PriceTable, PriceFileStatus, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
 
 /** One provider group in the editor catalog. */
 export interface ProviderCatalogRow {
@@ -49,9 +49,10 @@ async function call<T>(method: string, payload: Record<string, unknown>): Promis
   return parsed.value as T
 }
 
-/** Read the live provider catalog (registered providers + their models). */
-export async function getProviderCatalog(): Promise<{ providers: ProviderCatalogRow[] }> {
-  return call<{ providers: ProviderCatalogRow[] }>('catalog', {})
+/** Read the live provider catalog (registered providers + their models), plus
+ *  the state of the agent-writable price file (undefined on an older host). */
+export async function getProviderCatalog(): Promise<{ providers: ProviderCatalogRow[]; priceFile?: PriceFileStatus }> {
+  return call<{ providers: ProviderCatalogRow[]; priceFile?: PriceFileStatus }>('catalog', {})
 }
 
 /** Fetch a session's FULL per-request consumption history for the detail panel. */

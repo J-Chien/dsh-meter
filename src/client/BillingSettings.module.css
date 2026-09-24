@@ -89,6 +89,30 @@
   padding-bottom: 8px;
 }
 
+/* Price-file notice: a table whose rows come from a file must say so, or the
+   settings page looks like the owner of values it does not control. */
+.priceFileNote {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-sunken);
+  color: var(--billing-text-secondary);
+  font-size: 11px;
+  line-height: 15px;
+  overflow-wrap: anywhere;
+}
+
+.priceFileWarn {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--billing-radius-2);
+  background: var(--billing-surface-sunken);
+  color: var(--billing-state-error);
+  font-size: 11px;
+  line-height: 15px;
+  overflow-wrap: anywhere;
+}
+
 .readOnly {
   color: var(--billing-text-tertiary);
   margin: 12px 0 0;

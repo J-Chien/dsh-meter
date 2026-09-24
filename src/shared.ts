@@ -125,6 +125,24 @@ export interface ProviderCurrency {
   timezone?: string
 }
 
+/**
+ * Host-reported state of the agent-writable price file (docs/CONFIGURING.md).
+ * The settings card shows it so a file that supplies prices is never invisible:
+ * a table whose rows come from a file looks identical to one typed by hand.
+ */
+export interface PriceFileStatus {
+  /** Absolute path the host read (or tried to read). */
+  path: string
+  /** Whether the file exists; a missing file is the normal case. */
+  present: boolean
+  /** Model rows the file declares. */
+  rows: number
+  /** Of those, how many an explicit entry config overrides (price NOT in effect). */
+  overridden: number
+  /** Fatal problems; when non-empty the file was ignored whole. */
+  errors: string[]
+}
+
 /** The resolved price configuration (what the settings page edits). */
 export interface PriceTable {
   /** Currency per provider (providers may bill in different currencies). */

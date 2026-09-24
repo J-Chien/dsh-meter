@@ -1,6 +1,6 @@
 {
   "name": "dsh-meter",
-  "version": "0.3.27",
+  "version": "0.3.28",
   "description": "Per-session billing plugin for DeepSeek Harness: token buckets, cache hit rate, and peak-aware cost in the session header + a price-table settings page",
   "type": "module",
   "main": "lib/index.js",
@@ -25,16 +25,25 @@
     "build": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && tsdown",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
     "prepare": "tsc -p tsconfig.build.json && tsdown",
-    "test": "node --disable-warning=ExperimentalWarning tests/pure-check.ts && node --disable-warning=ExperimentalWarning tests/settings-nav-check.ts",
+    "test": "npm run test:pure && npm run test:nav && npm run test:prices",
+    "smoke": "node --disable-warning=ExperimentalWarning tests/smoke.ts",
+    "verify": "npm run typecheck && npm run build && npm run smoke && npm run test",
     "test:pure": "node --disable-warning=ExperimentalWarning tests/pure-check.ts",
     "test:nav": "node --disable-warning=ExperimentalWarning tests/settings-nav-check.ts",
+    "test:prices": "node --disable-warning=ExperimentalWarning tests/price-file-check.ts",
     "dev:watch": "tsdown --watch"
+  },
+  "bin": {
+    "dsh-meter-prices": "./scripts/check-prices.mjs"
   },
   "files": [
     "lib",
     "src",
     "tests",
     "cordis.patch.yml",
+    "docs/CONFIGURING.md",
+    "docs/examples",
+    "scripts",
     "tsconfig.json",
     "tsconfig.build.json",
     "tsconfig.tests.json",
@@ -43,6 +52,7 @@
   ],
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",
+    "js-yaml": "^4.3.2",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
@@ -86,6 +96,7 @@
     "@deepseek-ai/dsh-session-projection": "0.1.7-rc.2",
     "@deepseek-ai/dsh-session-projection-cache": "0.1.7-rc.2",
     "@deepseek-ai/dsh-settings": "0.1.7-rc.2",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.1",

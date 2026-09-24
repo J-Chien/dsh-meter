@@ -79,6 +79,22 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-meter
 npx @deepseek-ai/dsh web
 ```
 
+### 用配置文件定价（不想点设置页时）
+
+价格表可以完全用文件维护，Agent 也能据此把"一个链接 / 一张截图"直接落成配置：
+
+```sh
+# 默认路径：$DSH_HOME/dsh-meter/prices.yaml（未设 DSH_HOME 即 ~/.dsh/dsh-meter/prices.yaml）
+node scripts/check-prices.mjs                     # 校验 + 打印每行在真实时刻的有效价
+node scripts/check-prices.mjs my-prices.yaml      # 或指定文件（装成依赖后可用 npx dsh-meter-prices）
+```
+
+单位是**元/百万 tokens**（与价目页、设置页同一个数字）。优先级：**显式配置（profile patch / 设置页保存）> 价格文件 > 内置默认**，按行生效；设置卡片会显示价格来自哪个文件、覆盖了几行。格式规范、给 Agent 的配方（链接/截图）、自检与排错见 **[docs/CONFIGURING.md](docs/CONFIGURING.md)**，可运行示例见 [docs/examples/prices.deepseek.yaml](docs/examples/prices.deepseek.yaml)。
+
+```sh
+pnpm verify   # typecheck + build + smoke（跑已构建产物）+ 全部测试
+```
+
 > 版本要求：v0.3.24 起 peer 依赖为 `^0.1.7-rc.2`，请搭配 deepseek-harness **0.1.7-rc.2** 及以上；仍停留在 0.1.7-rc.1 / 0.1.5-rc.2 的环境请分别使用 dsh-meter 0.3.23 / 0.3.21。安装前 DSH 会按 peer 区间校验运行时版本，区间不匹配会直接拒绝安装（不是警告）。
 
 也可以从源码目录或 tarball 安装：
