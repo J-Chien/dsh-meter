@@ -21,8 +21,8 @@ import type { ReactNode } from 'react'
 import { IconChevronDownOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   getProviderCatalog,
-  type ModelPrice, type PeakPeriod, type PriceFileStatus, type PriceTable, type PriceTier, type ProviderCatalogRow,
-  type ModelCapability,
+  type CalendarStatus, type ModelPrice, type PeakPeriod, type PriceFileStatus, type PriceTable, type PriceTier,
+  type ProviderCatalogRow, type ModelCapability,
 } from './billing-api.ts'
 import { parsePriceInput, priceToInput, parseKTokensInput, kTokensToInput, formatTokens } from './format.ts'
 import { pricingScope, usePricingSnapshot } from './pricing-scope.ts'
@@ -197,6 +197,10 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
   // hand: without this, an agent-written config is invisible in the very UI
   // that appears to own the table.
   const [priceFile, setPriceFile] = useState<PriceFileStatus | undefined>(undefined)
+  // Holiday-calendar state: shown because a calendar that has gone stale (a
+  // year no official notice covers yet) silently bills holidays at peak, and
+  // that is invisible in the numbers themselves.
+  const [calendar, setCalendar] = useState<CalendarStatus | undefined>(undefined)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   // Native dirty semantics: any edit marks the card (header pill), save or
   // discard clears it. The catalog is kept for discard's rebuild.
@@ -270,6 +274,7 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
       if (cancelled) return
       catalogRef.current = catalog.providers
       setPriceFile(catalog.priceFile)
+      setCalendar(catalog.calendar)
       const providers = buildEditor(catalog.providers, table)
       setEditor({ status: 'ready', providers })
       if (!defaultCollapsed.current) {
@@ -450,6 +455,28 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
       {cardOpen ? (
         <div className={css.body}>
           {!snapshot.writable ? <p className={css.readOnly} role="status">{t('settings.readonly')}</p> : null}
+          {calendar !== undefined && calendar.names.length > 0 ? (
+            <p
+              className={calendar.missing.length > 0 || calendar.invalid.length > 0
+                || !calendar.years.includes(new Date().getFullYear())
+                ? css.priceFileWarn
+                : css.priceFileNote}
+              role="status"
+            >
+              {t('settings.calendar.label')}：{calendar.names.join(', ')}
+              {` · ${String(calendar.dates)} ${t('settings.calendar.dates')}`}
+              {calendar.years.length > 0
+                ? ` · ${t('settings.calendar.years')} ${calendar.years.join(', ')}`
+                : ''}
+              {calendar.years.includes(new Date().getFullYear())
+                ? ''
+                : ` · ${String(new Date().getFullYear())} ${t('settings.calendar.uncovered')}`}
+              {calendar.missing.length > 0 ? ` · ${t('settings.calendar.missing')}` : ''}
+              {calendar.invalid.length > 0
+                ? ` · ${String(calendar.invalid.length)} ${t('settings.calendar.invalid')}`
+                : ''}
+            </p>
+          ) : null}
           {priceFile !== undefined && priceFile.present
             ? priceFile.errors.length > 0
               ? (

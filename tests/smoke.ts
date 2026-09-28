@@ -32,7 +32,11 @@ if (!existsSync(join(process.cwd(), 'lib/index.js'))) {
 const host = await import(pathToFileURL(join(process.cwd(), 'lib/index.js')).href) as {
   apply: (ctx: unknown, config: unknown) => void
   Config: unknown
-  DEFAULT_TABLE: { providers: Record<string, unknown>; models: { provider: string; model: string; input: number; output: number; cacheInput: number }[] }
+  DEFAULT_TABLE: {
+    providers: Record<string, unknown>
+    models: { provider: string; model: string; input: number; output: number; cacheInput: number }[]
+    calendars?: Record<string, string[]>
+  }
   BILLING_ID: string
   inject: unknown
 }
@@ -50,6 +54,9 @@ process.env.DSH_HOME = home
 function fakeHost(options: {
   priceFile?: string
   models?: typeof host.DEFAULT_TABLE.models
+  calendars?: Record<string, string[]>
+  /** An EXPLICIT providers layer, exactly as a profile patch supplies one. */
+  providers?: Record<string, unknown>
   base?: unknown
   user?: unknown
 }) {
@@ -89,8 +96,12 @@ function fakeHost(options: {
 
   const config = {
     get: () => ({
-      providers: host.DEFAULT_TABLE.providers,
+      providers: options.providers ?? host.DEFAULT_TABLE.providers,
       models: options.models ?? host.DEFAULT_TABLE.models,
+      // The entry schema's default for `calendars` IS the shipped calendar, so a
+      // real resolved config always carries it — the fake must too, otherwise A7
+      // would assert against a config no running plugin can have.
+      calendars: options.calendars ?? host.DEFAULT_TABLE.calendars,
       ...(options.priceFile === undefined ? {} : { priceFile: options.priceFile }),
     }),
   }
@@ -126,7 +137,11 @@ async function callRoute(route: { handler: (req: unknown, res: unknown) => Promi
     end: (value: string) => { out.body = value },
   }
   await route.handler(req, res)
-  return JSON.parse(out.body) as { ok: boolean; value?: { priceFile?: Record<string, unknown> }; error?: unknown }
+  return JSON.parse(out.body) as {
+    ok: boolean
+    value?: { priceFile?: Record<string, unknown>; calendar?: Record<string, unknown> }
+    error?: unknown
+  }
 }
 
 const OFF_PEAK = Date.parse('2026-08-17T20:00:00+08:00')
@@ -308,6 +323,107 @@ models:
     + '(a stale version would let a checkpoint folded with the old prices be replayed)',
   )
   console.log('SMOKE A5 PASSED — editing the file is picked up by the running projection')
+}
+
+// --- A6. A calendar in the file suspends peak on those local dates, end to end. ---
+{
+  const file = join(home, 'calendar.yaml')
+  writeFileSync(file, `
+providers:
+  deepseek-official: { currency: CNY, currencySymbol: '¥', calendar: cn }
+models:
+  - provider: deepseek-official
+    model: deepseek-flash
+    input: 1
+    output: 4
+    cacheInput: 0.02
+    periods:
+      - { startHour: 9, endHour: 12, days: [1,2,3,4,5], input: 2, output: 8, cacheInput: 0.04 }
+calendars:
+  cn:
+    - 2026-10-01
+`)
+  // The entry config carries exactly one date too, so this scenario asserts the
+  // FILE's contribution deterministically instead of counting the shipped
+  // calendar's dates (which grows every year and would rot the assertion).
+  const fake = fakeHost({ priceFile: file, calendars: { cn: ['2026-10-01'] } })
+  host.apply(fake.ctx, fake.config)
+  const registration = fake.registrations[0] as Record<string, any>
+
+  const HOLIDAY = Date.parse('2026-10-01T10:00:00+08:00') // Thursday, inside the morning peak
+  const ORDINARY = Date.parse('2026-09-24T10:00:00+08:00') // the Thursday before
+  assert.equal(priceOneMillion(registration, 'deepseek-official', 'deepseek-flash', ORDINARY), 200_000,
+    'an ordinary Thursday bills the peak rate (2 元/M)')
+  assert.equal(priceOneMillion(registration, 'deepseek-official', 'deepseek-flash', HOLIDAY), 100_000,
+    'the statutory holiday bills the off-peak rate (1 元/M) — the calendar reached the fold')
+
+  const catalog = await callRoute(fake.routes[0] as never, 'catalog', {})
+  const calendar = catalog.value?.calendar as {
+    names?: string[]; dates?: number; years?: number[]; missing?: unknown[]; invalid?: unknown[]
+  } | undefined
+  assert.deepEqual(calendar?.names, ['cn'], 'the catalog reports the calendar')
+  assert.equal(calendar?.dates, 1, 'with its date count (file ∪ entry, which both name the same day)')
+  assert.deepEqual(calendar?.years, [2026], 'and the years it covers, so a stale calendar is visible')
+  assert.deepEqual(calendar?.missing, [], 'with no dangling references')
+  assert.deepEqual(calendar?.invalid, [], 'and no unreadable dates')
+  console.log('SMOKE A6 PASSED — a file calendar suspends peak on holidays, and is reported')
+}
+
+// --- A7. The built-in calendar covers the shipped DeepSeek routes by default. ---
+{
+  const fake = fakeHost({})
+  host.apply(fake.ctx, fake.config)
+  const registration = fake.registrations[0] as Record<string, any>
+  assert.equal(
+    priceOneMillion(registration, 'deepseek-official', 'deepseek-flash', Date.parse('2026-10-01T10:00:00+08:00')), 100_000,
+    'with no file at all, the shipped cn calendar already prices 国庆 off-peak',
+  )
+  // Contrast: a gateway row with its OWN peak window but no calendar keeps that
+  // window on the same instant — a provider's own rule is not the state's.
+  const models = [
+    ...host.DEFAULT_TABLE.models,
+    {
+      provider: 'wpsai', model: 'with-peaks',
+      input: 3_000_000, output: 6_000_000, cacheInput: 0,
+      periods: [{ startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 6_000_000, output: 12_000_000, cacheInput: 0 }],
+    },
+  ]
+  const gateway = fakeHost({ models })
+  host.apply(gateway.ctx, gateway.config)
+  const gatewayUnit = gateway.registrations[0] as Record<string, any>
+  assert.equal(
+    priceOneMillion(gatewayUnit, 'wpsai', 'with-peaks', Date.parse('2026-10-01T10:00:00+08:00')), 6_000_000,
+    'a provider that names no calendar keeps its configured peak window even on a statutory holiday',
+  )
+  assert.equal(
+    priceOneMillion(gatewayUnit, 'wpsai', 'with-peaks', Date.parse('2026-09-24T10:00:00+08:00')), 6_000_000,
+    'and on an ordinary weekday (so the contrast above is the calendar, not the window)',
+  )
+  console.log('SMOKE A7 PASSED — the built-in calendar applies to the DeepSeek routes only')
+}
+
+// --- A8. An explicit `providers:` layer must not drop the shipped calendar. ---
+// This is the shape every real deployment has (a patch that sets currencies),
+// and schemastery cannot default `calendar` per provider id — so without the
+// inheritance in withProviderDefaults, holidays would silently bill at peak.
+{
+  const fake = fakeHost({
+    providers: {
+      // No `calendar` anywhere: the patch only says what it cares about.
+      'deepseek-official': { currency: 'CNY', currencySymbol: '¥' },
+      wpsai: { currency: 'CNY', currencySymbol: '¥' },
+    },
+  })
+  host.apply(fake.ctx, fake.config)
+  const registration = fake.registrations[0] as Record<string, any>
+  assert.equal(
+    priceOneMillion(registration, 'deepseek-official', 'deepseek-flash', Date.parse('2026-10-01T10:00:00+08:00')), 100_000,
+    'a patch that only sets a currency still inherits the shipped cn calendar',
+  )
+  const catalog = await callRoute(fake.routes[0] as never, 'catalog', {})
+  const calendar = catalog.value?.calendar as { years?: number[] } | undefined
+  assert.equal((calendar?.years?.length ?? 0) > 0, true, 'and the card still reports its coverage')
+  console.log('SMOKE A8 PASSED — provider defaults survive an explicit providers layer')
 }
 
 // ---------------------------------------------------------------------------

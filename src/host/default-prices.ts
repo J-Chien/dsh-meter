@@ -13,13 +13,16 @@
  * DeepSeek's own API bills by clock: the published 空闲时段 (off-peak) rate is
  * the model's base price and 高峰时段 (peak) doubles it. Peak is Beijing time,
  * Monday–Friday, 09:00–12:00 and 14:00–18:00; weekends and Chinese public
- * holidays are off-peak. The holiday calendar is not modelled, so a holiday
- * request prices at peak — a documented limitation, not a rounding choice.
+ * holidays are off-peak, and that IS modelled: a provider names a calendar in
+ * `providers.<id>.calendar` (both DeepSeek routes ship with `cn`) and every
+ * peak window is suspended on those local dates. A year no notice has covered
+ * yet prices its holidays as peak, so the coverage is reported (settings card +
+ * `check-prices.mjs`) instead of being assumed — see DEFAULT_CALENDARS below.
  * Source: api-docs.deepseek.com/zh-cn/quick_start/pricing (2026-09).
  */
 import { WEEKDAY_DAYS } from '../shared.ts'
 import { PRICE_PRECISION } from './price.ts'
-import type { ModelPrice, PriceTable } from '../shared.ts'
+import type { ModelPrice, PriceTable, ProviderCurrency } from '../shared.ts'
 
 /** Convert a CNY-per-M price string/number to PRICE_PRECISION integer units. */
 export function cnyPerMillion(value: number): number {
@@ -152,6 +155,45 @@ export const DEFAULT_PRICES: ModelPrice[] = [
   ...deepSeekRows('deepseek-account'),
 ]
 
+/**
+ * Built-in holiday calendars. Only the 放假日 dates are listed — NOT the 调休
+ * days that turn a weekend into a workday: DeepSeek's rule is 「周一至周五
+ * （不含中国法定节假日）」, so a working Saturday stays 空闲. (In 2026 all six
+ * 调休 days are weekends; pricing them as peak would contradict the published
+ * rule, which is exactly what a generic "workday library" would do.)
+ *
+ * Ranges are inclusive and may include weekend days: those are already
+ * off-peak, so listing them is redundant rather than wrong — the calendar is
+ * kept as the notice published it, which is what makes it checkable against
+ * the source line by line.
+ *
+ * Sources (国务院办公厅):
+ *   2025 — 国办发明电〔2024〕12号  https://www.gov.cn/zhengce/content/202411/content_6986382.htm
+ *   2026 — 国办发明电〔2025〕7号   https://www.gov.cn/zhengce/content/202511/content_7047090.htm
+ *
+ * A year the notice has not published yet is simply absent: the fold then bills
+ * that year's weekdays as peak (the pre-holiday behaviour), and the settings
+ * card plus `check-prices.mjs` report which years the calendar covers, so the
+ * gap is visible instead of silent. Next notice: 2027, due ~2026-11.
+ */
+export const DEFAULT_CALENDARS: Record<string, string[]> = {
+  cn: [
+    '2025-01-01', // 元旦
+    '2025-01-28..2025-02-04', // 春节
+    '2025-04-04..2025-04-06', // 清明
+    '2025-05-01..2025-05-05', // 劳动节
+    '2025-05-31..2025-06-02', // 端午
+    '2025-10-01..2025-10-08', // 国庆 + 中秋
+    '2026-01-01..2026-01-03', // 元旦
+    '2026-02-15..2026-02-23', // 春节
+    '2026-04-04..2026-04-06', // 清明
+    '2026-05-01..2026-05-05', // 劳动节
+    '2026-06-19..2026-06-21', // 端午
+    '2026-09-25..2026-09-27', // 中秋
+    '2026-10-01..2026-10-07', // 国庆
+  ],
+}
+
 /** The default table: wpsai, zai, and both DeepSeek routes bill in CNY, ¥.
  *  No provider names a timezone: the fold's fallback IS `Asia/Shanghai`
  *  (shared.ts), which is the clock both DeepSeek peak windows need. */
@@ -159,8 +201,39 @@ export const DEFAULT_TABLE: PriceTable = {
   providers: {
     wpsai: { currency: 'CNY', currencySymbol: '¥' },
     zai: { currency: 'CNY', currencySymbol: '¥' },
-    'deepseek-official': { currency: 'CNY', currencySymbol: '¥' },
-    'deepseek-account': { currency: 'CNY', currencySymbol: '¥' },
+    // DeepSeek's own peak rule excludes Chinese statutory holidays, so both of
+    // its routes observe the built-in `cn` calendar. Other providers are left
+    // alone on purpose: a gateway's peak windows are whatever its operator
+    // configured, and silently suspending them on CN holidays would be a guess.
+    'deepseek-official': { currency: 'CNY', currencySymbol: '¥', calendar: 'cn' },
+    'deepseek-account': { currency: 'CNY', currencySymbol: '¥', calendar: 'cn' },
   },
   models: DEFAULT_PRICES,
+  calendars: DEFAULT_CALENDARS,
+}
+
+/**
+ * Fill in a provider entry's unset fields from the built-in entry for the same
+ * id.
+ *
+ * Needed for `calendar`, and only for `calendar`: schemastery's per-provider
+ * defaults are the SAME for every provider (currency CNY, symbol ¥), so a
+ * profile patch that lists `providers:` — which is what any real deployment
+ * does, if only to set a currency — would replace the built-in entry wholesale
+ * and silently drop the shipped `calendar: cn`, billing every statutory holiday
+ * at the peak rate again with nothing in the UI to show it. Currency and symbol
+ * are unaffected (the schema already defaults those identically).
+ *
+ * @param providers - the resolved provider map from the entry config.
+ * @returns a map whose entries keep their explicit fields and inherit the rest.
+ */
+export function withProviderDefaults(
+  providers: Record<string, ProviderCurrency>,
+): Record<string, ProviderCurrency> {
+  const filled: Record<string, ProviderCurrency> = {}
+  for (const [id, entry] of Object.entries(providers)) {
+    const fallback = DEFAULT_TABLE.providers[id]
+    filled[id] = fallback === undefined ? entry : { ...fallback, ...entry }
+  }
+  return filled
 }

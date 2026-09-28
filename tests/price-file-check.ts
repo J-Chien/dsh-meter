@@ -14,6 +14,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RATE_CEILING, loadPriceFile, mergeTables, parsePriceFile, resolvePriceFile } from '../src/host/price-file.ts'
+import { calendarCoverage } from '../src/calendar.ts'
 import { PRICE_PRECISION } from '../src/host/price.ts'
 import { DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import type { PriceTable } from '../src/shared.ts'
@@ -286,6 +287,98 @@ models:
   - { provider: p, model: m, input: ${String(RATE_CEILING)}, output: 1, cacheInput: 0 }
 `)
   assert.deepEqual(report.errors, [], 'a price exactly at the ceiling is a real price, not a unit mistake')
+}
+
+// --- 12. Calendars in the file: both date spellings, and what must be refused. ---
+{
+  // UNQUOTED dates: YAML types `2026-10-01` as a Date, not a string. This is the
+  // spelling a writer reaches for first, so the format must accept it — and
+  // recover the written day regardless of the host's timezone.
+  const unquoted = parsePriceFile(`
+providers:
+  deepseek-official: { currency: CNY, currencySymbol: '¥', calendar: cn }
+models:
+  - { provider: deepseek-official, model: m, input: 1, output: 2, cacheInput: 0 }
+calendars:
+  cn:
+    - 2026-10-01
+    - 2026-10-05..2026-10-07
+`)
+  assert.deepEqual(unquoted.errors, [], 'unquoted YAML dates are accepted')
+  assert.deepEqual(unquoted.table?.calendars?.cn, ['2026-10-01', '2026-10-05', '2026-10-06', '2026-10-07'],
+    'and arrive as expanded YYYY-MM-DD dates')
+  assert.equal(unquoted.table?.providers['deepseek-official']?.calendar, 'cn', 'the provider keeps its calendar reference')
+  assert.deepEqual(calendarCoverage(unquoted.table?.calendars).years, [2026], 'coverage reflects the file')
+
+  // Quoted dates mean the same thing; ranges may cross a year boundary.
+  const quoted = parsePriceFile(`
+models:
+  - { provider: p, model: m, input: 1, output: 2, cacheInput: 0 }
+calendars:
+  cn: ['2025-12-31..2026-01-02']
+`)
+  assert.deepEqual(quoted.table?.calendars?.cn, ['2025-12-31', '2026-01-01', '2026-01-02'], 'quoted ranges expand too')
+
+  // A provider naming a calendar nobody declared would never observe a holiday:
+  // refused, not silently ignored.
+  const dangling = parsePriceFile(`
+providers:
+  p: { currency: CNY, currencySymbol: '¥', calendar: cn }
+models:
+  - { provider: p, model: m, input: 1, output: 2, cacheInput: 0 }
+`)
+  assert.equal(dangling.table, undefined, 'a dangling calendar reference is refused')
+  assert.match(dangling.errors.join(' '), /is not declared under `calendars`/, 'naming the missing calendar')
+
+  // Impossible and backwards dates must not become silent no-ops.
+  const impossible = parsePriceFile(`
+models:
+  - { provider: p, model: m, input: 1, output: 2, cacheInput: 0 }
+calendars:
+  cn: ['2026-02-30']
+`)
+  assert.equal(impossible.table, undefined, 'an impossible date is refused')
+  assert.match(impossible.errors.join(' '), /not a real calendar date/, 'and named')
+
+  const backwards = parsePriceFile(`
+models:
+  - { provider: p, model: m, input: 1, output: 2, cacheInput: 0 }
+calendars:
+  cn: ['2026-10-07..2026-10-01']
+`)
+  assert.equal(backwards.table, undefined, 'a backwards range is refused')
+
+  // Declaring a calendar without referencing it is allowed (an agent may stage
+  // next year's notice before opting a provider in).
+  const unreferenced = parsePriceFile(`
+models:
+  - { provider: p, model: m, input: 1, output: 2, cacheInput: 0 }
+calendars:
+  cn: ['2026-10-01']
+`)
+  assert.deepEqual(unreferenced.errors, [], 'an unreferenced calendar is fine')
+  assert.equal(unreferenced.rows, 1, 'and does not disturb the rows')
+}
+
+// --- 13. Calendar merge is a UNION, provider merge is FIELD-wise. ---
+{
+  const base: PriceTable = {
+    providers: { a: { currency: 'CNY', currencySymbol: '¥', calendar: 'cn' } },
+    models: [{ provider: 'a', model: 'one', input: 1, output: 1, cacheInput: 0 }],
+    calendars: { cn: ['2026-10-01'] },
+  }
+  const overlay: PriceTable = {
+    // Restates ONLY the currency: the calendar reference must survive, or
+    // holidays would stop being excluded by an edit that never mentioned them.
+    providers: { a: { currency: 'USD', currencySymbol: '$' } },
+    models: [{ provider: 'a', model: 'two', input: 2, output: 2, cacheInput: 0 }],
+    calendars: { cn: ['2027-10-01'] },
+  }
+  const merged = mergeTables(base, overlay)
+  assert.equal(merged.providers.a?.currency, 'USD', 'a restated field wins')
+  assert.equal(merged.providers.a?.calendar, 'cn', 'an unmentioned field (calendar) survives')
+  assert.deepEqual(merged.calendars?.cn, ['2026-10-01', '2027-10-01'],
+    'calendar dates UNION, so appending next year never drops the shipped years')
 }
 
 console.log('PRICE FILE CHECK PASSED')

@@ -20,13 +20,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
 import type { HostContext } from './context-types.ts'
-import type { SessionBillingStats, PriceTable, PriceFileStatus, ModelPrice, ModelCapability, TurnCost } from '../shared.ts'
+import type { SessionBillingStats, PriceTable, PriceFileStatus, CalendarStatus, ModelPrice, ModelCapability, TurnCost } from '../shared.ts'
 import { BILLING_ENTRY_ID, RECENT_TURNS_CAP } from '../shared.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from './session-stats.ts'
 import type { BillingFoldState } from './session-stats.ts'
 import { subagentsForSession, setSubagentTableSource } from './subagent-stats.ts'
-import { DEFAULT_TABLE } from './default-prices.ts'
+import { DEFAULT_TABLE, withProviderDefaults } from './default-prices.ts'
 import { loadPriceFile, mergeTables, resolvePriceFile } from './price-file.ts'
+import { calendarCoverage, expandCalendarDates } from '../calendar.ts'
 import { BillingRouteError, readJsonBody, writeError, writeOk } from './wire.ts'
 import { billingFence } from './fence.ts'
 // Host-side `billing` key merge into SessionProjectionStateMap (type-only).
@@ -89,6 +90,10 @@ const priceTableSchema = z.object({
   providers: z.dict(providerCurrencySchema).default(DEFAULT_TABLE.providers),
   models: z.array(modelPriceSchema).default(DEFAULT_TABLE.models),
   priceFile: z.string(),
+  // Entries are validated by the calendar compiler (which understands both
+  // quoted strings and YAML's own date type, and the `..` range spelling);
+  // describeCalendars reports anything it cannot read.
+  calendars: z.dict(z.array(z.any())).default(DEFAULT_TABLE.calendars ?? {}),
 })
 
 /** The billing entry's Config: the whole price table as ONE volatile ref
@@ -112,6 +117,12 @@ function freezeTable(value: PriceTable): PriceTable {
       periods: m.periods?.map(p => ({ ...p, tiers: p.tiers?.map(t => ({ ...t })) })),
       tiers: m.tiers?.map(t => ({ ...t })),
     })),
+    // Carried (and copied) because the holiday lookup compiles its Set cache
+    // against this very object: dropping it here would silently disable every
+    // calendar, and sharing it would let a later edit mutate a live cache key.
+    ...(value.calendars === undefined
+      ? {}
+      : { calendars: Object.fromEntries(Object.entries(value.calendars).map(([name, dates]) => [name, [...dates]])) }),
   }
 }
 
@@ -190,6 +201,49 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
   let priceFileStatus: PriceFileStatus = {
     path: resolvePriceFile(config.get().priceFile), present: false, rows: 0, overridden: 0, errors: [],
   }
+  let calendarStatus: CalendarStatus = { names: [], dates: 0, years: [], missing: [], invalid: [] }
+  let calendarState: string | undefined
+
+  /**
+   * Describe the table's calendars, and shout once per state when a provider
+   * names one that does not exist: that provider would never observe a holiday,
+   * which is the silent version of the very bug this feature fixes.
+   */
+  const describeCalendars = (table: PriceTable): CalendarStatus => {
+    const invalid: string[] = []
+    for (const [name, entries] of Object.entries(table.calendars ?? {})) {
+      for (const problem of expandCalendarDates(entries).errors) invalid.push(`calendars.${name}: ${problem}`)
+    }
+    const coverage = calendarCoverage(table.calendars)
+    const missing: { provider: string; calendar: string }[] = []
+    for (const [provider, entry] of Object.entries(table.providers)) {
+      const name = entry.calendar
+      if (name === undefined || name === '') continue
+      if ((table.calendars?.[name] ?? []).length === 0) missing.push({ provider, calendar: name })
+    }
+    const log = `${coverage.names.join(',')}:${String(coverage.count)}:${missing.map(entry => entry.provider).join(',')}:${String(invalid.length)}`
+    if (calendarState !== log) {
+      for (const problem of invalid) {
+        ctx.logger.warn(`billing: holiday calendar entry ignored — ${problem}`)
+      }
+      for (const entry of missing) {
+        ctx.logger.warn(`billing: provider ${entry.provider} names calendar "${entry.calendar}" but none is declared — holidays will NOT be excluded for it`)
+      }
+      if (coverage.names.length > 0) {
+        ctx.logger.info(`billing: holiday calendar(s) ${coverage.names.join(', ')} cover ${String(coverage.count)} date(s)`
+          + (coverage.from === undefined ? '' : ` (${coverage.from}..${String(coverage.to)})`))
+      }
+      calendarState = log
+    }
+    return {
+      names: [...coverage.names],
+      dates: coverage.count,
+      ...(coverage.from === undefined ? {} : { from: coverage.from, to: coverage.to }),
+      years: [...coverage.years],
+      missing,
+      invalid,
+    }
+  }
 
   /**
    * The effective table, in three layers (docs/CONFIGURING.md states this):
@@ -209,7 +263,11 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
    * refresh rather than needing a restart.
    */
   const resolveTable = (): PriceTable => {
-    const entry = config.get()
+    const raw = config.get()
+    // Inherit per-provider defaults the schema cannot express (see
+    // withProviderDefaults): a patch listing `providers:` would otherwise drop
+    // the shipped holiday calendar without leaving a trace.
+    const entry: BillingEntryConfig = { ...raw, providers: withProviderDefaults(raw.providers) }
     const path = resolvePriceFile(entry.priceFile)
     const report = loadPriceFile(path)
 
@@ -224,7 +282,9 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
         for (const note of report.warnings) ctx.logger.warn(`billing: price file — ${note}`)
         priceFileState = { log }
       }
-      return freezeTable(entry)
+      const frozenEntry = freezeTable(entry)
+      calendarStatus = describeCalendars(frozenEntry)
+      return frozenEntry
     }
 
     // Layer 1 = what the profile patch (`base`) and the settings page (`user`)
@@ -254,7 +314,9 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
     if (pinnedModels.length > 0 || Object.keys(pinnedProviders).length > 0) {
       table = mergeTables(table, { providers: pinnedProviders, models: pinnedModels })
     }
-    return freezeTable(table)
+    const frozen = freezeTable(table)
+    calendarStatus = describeCalendars(frozen)
+    return frozen
   }
 
   holder.table = resolveTable()
@@ -425,7 +487,7 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
             // The price-file status rides the catalog: the editor already reads
             // it on mount, and a file that supplies prices must be visible in
             // the UI, not just in a log line.
-            writeOk(res, { ...await catalog(ctx), priceFile: priceFileStatus })
+            writeOk(res, { ...await catalog(ctx), priceFile: priceFileStatus, calendar: calendarStatus })
             break
           case 'turns':
             writeOk(res, turnsForSession(ctx, payload, holder.table))

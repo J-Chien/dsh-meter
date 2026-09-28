@@ -7,9 +7,9 @@
  * `PRICE_PRECISION`ths of the configured currency unit (default 1/100000 of
  * a yuan, i.e. 0.00001). This keeps 4-decimal prices like ¥10.1550/M exact.
  */
-import { findPriceRow, inPeakWindow, PRICE_PRECISION, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
+import { findPriceRow, inPeakWindow, isHolidayAt, PRICE_PRECISION, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
 
-export { findPriceRow, inPeakWindow, PRICE_PRECISION, formatPrice, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
+export { findPriceRow, inPeakWindow, isHolidayAt, PRICE_PRECISION, formatPrice, type ModelPrice, type PeakPeriod, type PriceTable, type PriceTier } from '../shared.ts'
 
 /** One model's effective price for a given instant, in price units. */
 export interface EffectivePrice {
@@ -17,8 +17,16 @@ export interface EffectivePrice {
   output: number
   cacheInput: number
   cacheWrite: number
-  /** Which period matched: 'off-peak' (default) or 'peak'. */
+  /** Which period matched: 'off-peak' (default) or 'peak'. A calendar holiday
+   *  is OFF-PEAK — that is what the provider's rule says it is. */
   period: 'off-peak' | 'peak'
+  /**
+   * True when a calendar holiday is what kept this instant out of its peak
+   * window. Reported separately from `period` only so tooling (the self-check
+   * CLI, and any future "节假日" label) can SHOW why the price is the off-peak
+   * one; nothing about the price depends on the distinction.
+   */
+  holiday: boolean
   /** Whether a price row exists for the model at all. */
   found: boolean
 }
@@ -97,24 +105,30 @@ export function effectivePrice(
 ): EffectivePrice {
   const row = findPriceRow(table, provider, model, reasoningEffort)
   if (row === undefined) {
-    return { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', found: false }
+    return { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', holiday: false, found: false }
   }
   const timezone = table.providers[provider]?.timezone
-  const period = activePeriod(row, timeMs, timezone)
+  // A statutory holiday suspends the day's peak windows entirely (the provider's
+  // rule: 高峰 = 周一至周五 不含法定节假日), so it is checked BEFORE the windows.
+  // Only reported as a holiday effect when the row actually has windows to
+  // suspend — a flat-priced row is unaffected either way.
+  const hasWindows = row.periods !== undefined && row.periods.length > 0
+  const holiday = hasWindows && isHolidayAt(table, provider, timeMs)
+  const period = holiday ? undefined : activePeriod(row, timeMs, timezone)
   if (period !== undefined) {
     // Period tiers align by index with the base tier RANGES.
     if (period.tiers !== undefined && period.tiers.length > 0) {
       const index = tierIndex(row.tiers, totalInput, output)
       const periodTier = index >= 0 ? period.tiers[index] : undefined
-      if (periodTier !== undefined) return { ...fourPrices(periodTier), period: 'peak', found: true }
+      if (periodTier !== undefined) return { ...fourPrices(periodTier), period: 'peak', holiday: false, found: true }
     }
-    return { ...fourPrices(period), period: 'peak', found: true }
+    return { ...fourPrices(period), period: 'peak', holiday: false, found: true }
   }
   const tier = matchTier(row.tiers, totalInput, output)
   if (tier !== undefined) {
-    return { ...fourPrices(tier), period: 'off-peak', found: true }
+    return { ...fourPrices(tier), period: 'off-peak', holiday, found: true }
   }
-  return { ...fourPrices(row), period: 'off-peak', found: true }
+  return { ...fourPrices(row), period: 'off-peak', holiday, found: true }
 }
 
 /** Price one token bucket at a per-M price. All quantities are integers. */
@@ -140,6 +154,8 @@ export function priceRequest(
   priceUnits: number
   currency: string
   period: 'off-peak' | 'peak'
+  /** See {@link EffectivePrice.holiday}. */
+  holiday: boolean
   found: boolean
 } {
   const uncachedInputTokens = usage.inputTokens
@@ -153,5 +169,5 @@ export function priceRequest(
     + priceTokens(cacheWriteTokens, eff.cacheWrite)
     + priceTokens(outputTokens, eff.output)
   const currency = table.providers[provider]?.currency ?? 'CNY'
-  return { priceUnits, currency, period: eff.period, found: eff.found }
+  return { priceUnits, currency, period: eff.period, holiday: eff.holiday, found: eff.found }
 }

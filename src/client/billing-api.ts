@@ -8,9 +8,9 @@
  * `pricing-scope.ts`). These routes remain for what the settings transport
  * not cover: the live LLM catalog and on-demand session folds.
  */
-import type { ModelPrice, PeakPeriod, PriceTable, PriceFileStatus, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
+import type { ModelPrice, PeakPeriod, PriceTable, PriceFileStatus, CalendarStatus, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
 
-export type { ModelPrice, PeakPeriod, PriceTable, PriceFileStatus, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
+export type { ModelPrice, PeakPeriod, PriceTable, PriceFileStatus, CalendarStatus, PriceTier, SessionBillingStats, ModelCapability, TurnCost, SubagentsBillingStats } from '../shared.ts'
 
 /** One provider group in the editor catalog. */
 export interface ProviderCatalogRow {
@@ -50,9 +50,14 @@ async function call<T>(method: string, payload: Record<string, unknown>): Promis
 }
 
 /** Read the live provider catalog (registered providers + their models), plus
- *  the state of the agent-writable price file (undefined on an older host). */
-export async function getProviderCatalog(): Promise<{ providers: ProviderCatalogRow[]; priceFile?: PriceFileStatus }> {
-  return call<{ providers: ProviderCatalogRow[]; priceFile?: PriceFileStatus }>('catalog', {})
+ *  the price file's and the holiday calendars' state (both undefined on an
+ *  older host). */
+export async function getProviderCatalog(): Promise<{
+  providers: ProviderCatalogRow[]
+  priceFile?: PriceFileStatus
+  calendar?: CalendarStatus
+}> {
+  return call<{ providers: ProviderCatalogRow[]; priceFile?: PriceFileStatus; calendar?: CalendarStatus }>('catalog', {})
 }
 
 /** Fetch a session's FULL per-request consumption history for the detail panel. */

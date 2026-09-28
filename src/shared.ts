@@ -4,6 +4,8 @@
  * halves can import it without crossing the bundle purity gate.
  */
 
+import { expandCalendarDates } from './calendar.ts'
+
 /** The Host plugin entry id carrying the price table (the entry's volatile
  *  Config IS the table — keep host watcher and client binding on this). */
 export const BILLING_ENTRY_ID = 'billing'
@@ -116,6 +118,14 @@ export interface ProviderCurrency {
   currency: 'CNY' | 'USD'
   currencySymbol: string
   /**
+   * Name of the calendar in `PriceTable.calendars` this provider observes, e.g.
+   * `cn`. On those LOCAL dates every peak window is suspended for the whole day
+   * (see calendar.ts for why only the 放假日 list is modelled). Absent = the
+   * provider is never treated as being on holiday, which is the honest default:
+   * a gateway's peak windows are whatever its operator configured.
+   */
+  calendar?: string
+  /**
    * IANA timezone name (e.g. "Asia/Shanghai") for judging this provider's
    * peak windows. Absent = DEFAULT_TIMEZONE. One provider may span regions
    * and another may bill in a different timezone, so each provider carries
@@ -143,11 +153,48 @@ export interface PriceFileStatus {
   errors: string[]
 }
 
+/**
+ * Host-reported holiday-calendar state, so the settings card and the self-check
+ * CLI can SHOW what the calendar does and does not cover. A stale calendar is
+ * the failure mode of this feature — it silently bills holidays at peak — so
+ * the coverage travels with the table instead of living only in a code comment.
+ */
+export interface CalendarStatus {
+  /** Calendar names in the table, in declaration order. */
+  names: string[]
+  /** Distinct holiday dates across all calendars. */
+  dates: number
+  /** Coverage window, absent when no calendar has a date. */
+  from?: string
+  to?: string
+  /** Years the dates cover, ascending. */
+  years: number[]
+  /**
+   * Providers naming a calendar no calendar declares. Reported rather than
+   * ignored: the provider would never observe a holiday, and the price-file
+   * loader only validates the FILE (a hand-written patch layer can still get
+   * this wrong).
+   */
+  missing: { provider: string; calendar: string }[]
+  /**
+   * Calendar entries the compiler could not read (a typo'd date, a bare
+   * number). Reported so a broken date is a visible gap rather than a holiday
+   * that quietly bills at peak.
+   */
+  invalid: string[]
+}
+
 /** The resolved price configuration (what the settings page edits). */
 export interface PriceTable {
   /** Currency per provider (providers may bill in different currencies). */
   providers: Record<string, ProviderCurrency>
   models: ModelPrice[]
+  /**
+   * Statutory-holiday calendars by name, each a list of LOCAL `YYYY-MM-DD`
+   * dates (ranges are expanded on load). A provider opts in by naming one in
+   * `providers.<id>.calendar`; a calendar nobody references costs nothing.
+   */
+  calendars?: Record<string, string[]>
 }
 
 /**
@@ -158,8 +205,8 @@ export interface PriceTable {
  * formatter must not be reconstructed each call.
  */
 const tzFormatters = new Map<string, Intl.DateTimeFormat>()
-const tzCache = new Map<string, { hour: number; day: number; minute: number }>()
-function wallClock(timeMs: number, timezone: string): { hour: number; day: number } {
+const tzCache = new Map<string, { hour: number; day: number; date: string; minute: number }>()
+function wallClock(timeMs: number, timezone: string): { hour: number; day: number; date: string } {
   let formatter = tzFormatters.get(timezone)
   if (formatter === undefined) {
     // A corrupted table could carry an unparseable timezone; degrade to the
@@ -167,6 +214,7 @@ function wallClock(timeMs: number, timezone: string): { hour: number; day: numbe
     try {
       formatter = new Intl.DateTimeFormat('en-US', {
         timeZone: timezone, weekday: 'short', hour: '2-digit', hourCycle: 'h23',
+        year: 'numeric', month: '2-digit', day: '2-digit',
       })
     } catch {
       return wallClock(timeMs, DEFAULT_TIMEZONE)
@@ -175,7 +223,7 @@ function wallClock(timeMs: number, timezone: string): { hour: number; day: numbe
   }
   let cached = tzCache.get(timezone)
   if (cached === undefined) {
-    cached = { hour: -1, day: -1, minute: -1 }
+    cached = { hour: -1, day: -1, date: '', minute: -1 }
     tzCache.set(timezone, cached)
   }
   // The cache keys by the wall-clock minute: an instant that re-reads the
@@ -185,15 +233,23 @@ function wallClock(timeMs: number, timezone: string): { hour: number; day: numbe
     const parts = formatter.formatToParts(timeMs)
     let hour = 0
     let day = 0
+    let year = ''
+    let month = ''
+    let date = ''
     for (const part of parts) {
       if (part.type === 'hour') hour = Number(part.value) % 24
       else if (part.type === 'weekday') day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(part.value)
+      else if (part.type === 'year') year = part.value
+      else if (part.type === 'month') month = part.value
+      else if (part.type === 'day') date = part.value
     }
     cached.hour = hour
     cached.day = day
+    // Same call, same cache: the local calendar date a holiday is keyed by.
+    cached.date = `${year}-${month}-${date}`
     cached.minute = minute
   }
-  return { hour: cached.hour, day: cached.day }
+  return { hour: cached.hour, day: cached.day, date: cached.date }
 }
 
 /** Whether a wall-clock instant falls inside a peak window. Shared by the
@@ -231,6 +287,62 @@ export function inPeakWindow(period: PeakPeriod, timeMs: number, timezone?: stri
   // window's start day (see the doc comment above).
   if (period.days !== undefined && period.days.length > 0 && !period.days.includes(windowDay)) return false
   return true
+}
+
+/**
+ * Compiled holiday sets, keyed weakly by the `calendars` object they came from
+ * (a Map per object, then per calendar name). Weak on purpose: `freezeTable`
+ * mints a fresh object per resolve, so a price edit drops the cache together
+ * with the table it belonged to, and no stale dates can outlive an edit.
+ */
+const calendarSets = new WeakMap<object, Map<string, ReadonlySet<string>>>()
+
+/**
+ * The holiday dates one provider observes, compiled for lookup, or undefined
+ * when it names no calendar (the default: a gateway's peak windows are
+ * whatever its operator configured, so it is never presumed to be on holiday).
+ * @param table - the resolved table.
+ * @param provider - provider id (`table.providers[provider].calendar`).
+ */
+export function providerHolidays(table: PriceTable, provider: string): ReadonlySet<string> | undefined {
+  const name = table.providers[provider]?.calendar
+  const calendars = table.calendars
+  if (name === undefined || name === '') return undefined
+  if (calendars === undefined) return undefined
+  const dates = calendars[name]
+  if (dates === undefined) return undefined
+  let byName = calendarSets.get(calendars)
+  if (byName === undefined) {
+    byName = new Map()
+    calendarSets.set(calendars, byName)
+  }
+  let compiled = byName.get(name)
+  if (compiled === undefined) {
+    // Entries may be written as inclusive ranges (the built-in calendar and any
+    // hand-written layer do), so expansion happens here — the one place every
+    // source funnels through — rather than trusting each writer to have
+    // expanded already. Unreadable entries simply never match; the file loader
+    // and the self-check CLI are what REPORT them.
+    compiled = new Set(expandCalendarDates(dates).dates)
+    byName.set(name, compiled)
+  }
+  return compiled
+}
+
+/**
+ * Whether `timeMs` falls on a holiday date for this provider. The date is read
+ * in the provider's OWN clock — the same `wallClock` the peak windows open in —
+ * so a calendar never depends on where the host process runs.
+ * @param table - the resolved table.
+ * @param provider - provider id.
+ * @param timeMs - the request instant.
+ */
+export function isHolidayAt(table: PriceTable, provider: string, timeMs: number): boolean {
+  const holidays = providerHolidays(table, provider)
+  if (holidays === undefined) return false
+  const timezone = table.providers[provider]?.timezone
+  const tz = timezone !== undefined && timezone.trim() !== '' ? timezone : DEFAULT_TIMEZONE
+  return holidays.has(wallClock(timeMs, tz).date)
 }
 
 /**
@@ -302,6 +414,10 @@ export function anyPeakActive(
     const effort = rest.length > model.length ? rest.slice(model.length + 1) : undefined
     const row = findPriceRow(table, provider, model, effort)
     if (row?.periods === undefined || row.periods.length === 0) continue
+    // A calendar holiday suspends every window for that local day, so the hint
+    // must consult it too — otherwise the badge would say 高峰 while the fold
+    // bills off-peak.
+    if (isHolidayAt(table, provider, timeMs)) continue
     const timezone = table.providers[provider]?.timezone
     if (row.periods.some(p => inPeakWindow(p, timeMs, timezone))) return true
   }

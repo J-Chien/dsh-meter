@@ -27,6 +27,7 @@ const meter = await import(libPath)
 
 const argv = process.argv.slice(2)
 const json = argv.includes('--json')
+const calendarOnly = argv.includes('--calendar')
 const atIndex = argv.indexOf('--at')
 const at = atIndex === -1 ? undefined : argv[atIndex + 1]
 const file = argv.find(argument => !argument.startsWith('--') && argument !== at) ?? meter.resolvePriceFile(undefined)
@@ -62,6 +63,7 @@ if (!report.present) {
 if (json) {
   console.log(JSON.stringify({
     path: report.path, rows: report.rows, errors: report.errors, warnings: report.warnings,
+    calendar: { ...meter.calendarCoverage({ ...(meter.DEFAULT_CALENDARS ?? {}), ...(report.table.calendars ?? {}) }), defaultNames: Object.keys(meter.DEFAULT_CALENDARS ?? {}) },
     rows_detail: report.table === undefined ? [] : report.table.models.map(row => ({
       provider: row.provider,
       model: row.model,
@@ -84,6 +86,46 @@ if (report.errors.length > 0) {
   process.exit(1)
 }
 
+// Holiday calendars: what they cover, and — the failure mode worth shouting
+// about — a year no official notice has covered yet, which bills holidays at
+// peak without showing it in any number.
+// Built-ins first, then the file's (the host layers them the same way), so this
+// report describes what the plugin will ACTUALLY observe, not just the file.
+const calendars = { ...(meter.DEFAULT_CALENDARS ?? {}), ...(report.table.calendars ?? {}) }
+const coverage = meter.calendarCoverage(calendars)
+if (coverage.names.length > 0) {
+  // With --at, judge the year that instant belongs to (Beijing, like the
+  // probes), so "is 2027 covered yet?" is a command rather than a guess.
+  const year = at === undefined
+    ? new Date().getFullYear()
+    : new Date(Date.parse(at) + 8 * 3600_000).getUTCFullYear()
+  const uncovered = !coverage.years.includes(year)
+  console.log(`calendars  : ${coverage.names.join(', ')} · ${coverage.count} date(s)`
+    + (coverage.from === undefined ? '' : ` · ${coverage.from}..${coverage.to}`)
+    + ` · years ${coverage.years.join(', ') || '—'}`)
+  if (uncovered) console.log(`WARNING    : ${year} is not covered — its statutory holidays will bill at the PEAK rate`)
+} else {
+  console.log('calendars  : none — every weekday peak window applies on statutory holidays too')
+}
+for (const name of coverage.names) {
+  const usedBy = Object.entries(report.table.providers)
+    .filter(([, provider]) => provider.calendar === name)
+    .map(([id]) => id)
+    .join(', ')
+  console.log(`  ${name.padEnd(10)} ${String(coverage.byName[name] ?? 0).padStart(3)} date(s)`
+    + ` · used by ${usedBy === '' ? 'nobody' : usedBy}`)
+}
+// A provider naming a calendar that is not declared simply never observes one.
+for (const [id, provider] of Object.entries(report.table.providers)) {
+  if (provider.calendar !== undefined && calendars[provider.calendar] === undefined) {
+    console.log(`WARNING    : provider ${id} names calendar "${provider.calendar}", which is not declared`)
+  }
+}
+if (calendarOnly) {
+  console.log('\n(calendar-only report; pass a file to also see effective prices)')
+  process.exit(0)
+}
+
 console.log(`\neffective prices, 元 / million tokens (probes at ${probes[0].slice(0, 10)} +08:00):`)
 const columns = at !== undefined ? [at] : ['Mon 10:00', 'Mon 13:00', 'Mon 15:00', 'Sat 10:00']
 const width = Math.max(...report.table.models.map(row => `${row.provider}/${row.model}`.length), 20)
@@ -92,7 +134,10 @@ for (const row of report.table.models) {
   const cells = probes.map(probe => {
     const price = meter.effectivePrice(report.table, row.provider, row.model, row.reasoningEffort, Date.parse(probe))
     if (!price.found) return 'unpriced'
-    return `${price.period === 'peak' ? '峰' : '闲'} ${perMillion(price.input)}/${perMillion(price.output)}/${perMillion(price.cacheInput)}`
+    // 节 marks an instant a statutory holiday pulled OUT of its peak window —
+    // the one thing about this feature that is otherwise invisible.
+    const mark = price.period === 'peak' ? '峰' : price.holiday ? '闲节' : '闲'
+    return `${mark} ${perMillion(price.input)}/${perMillion(price.output)}/${perMillion(price.cacheInput)}`
   })
   console.log(`${`${row.provider}/${row.model}`.padEnd(width)}  ${cells.map(cell => cell.padStart(22)).join('  ')}`)
 }

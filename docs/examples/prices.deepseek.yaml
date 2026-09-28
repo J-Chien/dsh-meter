@@ -11,10 +11,32 @@ providers:
     currency: CNY
     currencySymbol: '¥'
     timezone: Asia/Shanghai
+    calendar: cn # 官方规则：高峰不含中国法定节假日
   deepseek-account: # 同一上游服务、同一价目表，因此同价
     currency: CNY
     currencySymbol: '¥'
     timezone: Asia/Shanghai
+    calendar: cn
+
+# 法定节假日：这些本地日期整天按空闲计价。
+# 只写「放假」日，不写调休上班日——官方规则是「周一至周五（不含法定节假日）」，
+# 而 2026 年六个调休日全部落在周末，本来就空闲。
+# 区间写法 YYYY-MM-DD..YYYY-MM-DD 含首尾；与内置的 cn 日历取并集，所以追加新年份很安全。
+calendars:
+  cn:
+    - 2025-01-01 # 元旦（国办发明电〔2024〕12号）
+    - 2025-01-28..2025-02-04 # 春节
+    - 2025-04-04..2025-04-06 # 清明
+    - 2025-05-01..2025-05-05 # 劳动节
+    - 2025-05-31..2025-06-02 # 端午
+    - 2025-10-01..2025-10-08 # 国庆 + 中秋
+    - 2026-01-01..2026-01-03 # 元旦（国办发明电〔2025〕7号）
+    - 2026-02-15..2026-02-23 # 春节
+    - 2026-04-04..2026-04-06 # 清明
+    - 2026-05-01..2026-05-05 # 劳动节
+    - 2026-06-19..2026-06-21 # 端午
+    - 2026-09-25..2026-09-27 # 中秋
+    - 2026-10-01..2026-10-07 # 国庆
 
 models:
   # 规范模型名。空闲 1/4/0.02，高峰 2/8/0.04。
@@ -37,9 +59,24 @@ models:
       - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }
       - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }
 
-  # 已下线但仍可调用、由 V4.1-Flash 提供服务并按 Flash 价计费的两个旧名。
-  - { provider: deepseek-official, model: deepseek-v4-flash, input: 1, output: 4, cacheInput: 0.02 }
-  - { provider: deepseek-official, model: deepseek-v4-flash-vision-exp, input: 1, output: 4, cacheInput: 0.02 }
+  # 已下线但仍可调用、由 V4.1-Flash 提供服务并按 Flash 价计费的两个旧名：
+  # 「按 Flash 价格计费」= 同一张费率卡，所以高峰时段也照 Flash 的两段给。
+  - provider: deepseek-official
+    model: deepseek-v4-flash
+    input: 1
+    output: 4
+    cacheInput: 0.02
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+  - provider: deepseek-official
+    model: deepseek-v4-flash-vision-exp
+    input: 1
+    output: 4
+    cacheInput: 0.02
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
 
   # deepseek-account 与 deepseek-official 同价（同一价目表）。
   - provider: deepseek-account
@@ -58,3 +95,19 @@ models:
     periods:
       - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }
       - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 9, output: 27, cacheInput: 0.3 }
+  - provider: deepseek-account
+    model: deepseek-v4-flash
+    input: 1
+    output: 4
+    cacheInput: 0.02
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+  - provider: deepseek-account
+    model: deepseek-v4-flash-vision-exp
+    input: 1
+    output: 4
+    cacheInput: 0.02
+    periods:
+      - { startHour: 9, endHour: 12, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }
+      - { startHour: 14, endHour: 18, days: [1, 2, 3, 4, 5], input: 2, output: 8, cacheInput: 0.04 }

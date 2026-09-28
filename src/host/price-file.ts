@@ -28,6 +28,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { load as parseYaml } from 'js-yaml'
+import { expandCalendarDates } from '../calendar.ts'
 import { PRICE_PRECISION } from './price.ts'
 import type { ModelPrice, PeakPeriod, PriceTable, PriceTier, ProviderCurrency } from '../shared.ts'
 
@@ -85,11 +86,17 @@ const providerSchema = z.object({
   currency: z.union([z.const('CNY'), z.const('USD')]).default('CNY'),
   currencySymbol: z.string().default('¥'),
   timezone: z.string().max(64),
+  calendar: z.string(),
 })
 
 const fileSchema = z.object({
   providers: z.dict(providerSchema).default({}),
   models: z.array(modelSchema).default([]),
+  // Written as `YYYY-MM-DD` or inclusive `YYYY-MM-DD..YYYY-MM-DD`; expanded and
+  // validated below, then merged by name (see mergeTables).
+  // `unknown`: YAML hands an unquoted `2026-10-01` to us as a Date, and the
+  // expander is what normalizes and validates both spellings.
+  calendars: z.dict(z.array(z.any())).default({}),
 })
 
 /** One model row as the FILE spells it (currency per million tokens). */
@@ -273,7 +280,11 @@ export function parsePriceFile(text: string, path = '<price file>'): PriceFileRe
     }
   }
 
-  let parsed: { providers: Record<string, ProviderCurrency>; models: FileModelRow[] }
+  let parsed: {
+    providers: Record<string, ProviderCurrency>
+    models: FileModelRow[]
+    calendars: Record<string, unknown[]>
+  }
   try {
     parsed = fileSchema(record) as typeof parsed
   } catch (error) {
@@ -282,6 +293,25 @@ export function parsePriceFile(text: string, path = '<price file>'): PriceFileRe
 
   const models = parsed.models
   const providers = { ...parsed.providers }
+  const calendars: Record<string, string[]> = {}
+  for (const [name, entries] of Object.entries(parsed.calendars)) {
+    const { dates, errors: entryErrors } = expandCalendarDates(entries)
+    for (const entryError of entryErrors) errors.push(`calendars.${name}: ${entryError}`)
+    if (entryErrors.length > 0) continue
+    if (dates.length < entries.length) {
+      warnings.push(`calendars.${name}: ${String(entries.length - dates.length)} date(s) were already covered by another entry`)
+    }
+    calendars[name] = dates
+  }
+
+  // A provider naming a calendar nobody declared would silently never observe a
+  // holiday — the exact class of quiet wrongness this format exists to refuse.
+  const declaredCalendars = new Set([...Object.keys(parsed.calendars), ...Object.keys(calendars)])
+  for (const [id, provider] of Object.entries(providers)) {
+    if (provider.calendar !== undefined && provider.calendar !== '' && !declaredCalendars.has(provider.calendar)) {
+      errors.push(`providers.${id}.calendar = "${provider.calendar}" is not declared under \`calendars\``)
+    }
+  }
 
   if (models.length === 0) {
     errors.push(`${path} declares no models — an empty price file would silently price nothing`)
@@ -344,7 +374,11 @@ export function parsePriceFile(text: string, path = '<price file>'): PriceFileRe
     rows: models.length,
     errors,
     warnings,
-    table: { providers, models: models.map(convertRow) },
+    table: {
+      providers,
+      models: models.map(convertRow),
+      ...(Object.keys(calendars).length === 0 ? {} : { calendars }),
+    },
   }
 }
 
@@ -383,8 +417,27 @@ export function mergeTables(base: PriceTable, overlay: PriceTable): PriceTable {
   const merged = new Map<string, ModelPrice>()
   for (const row of base.models) merged.set(rowKey(row), row)
   for (const row of overlay.models) merged.set(rowKey(row), row)
+
+  // Providers merge FIELD-wise, not per key: a file that restates only a
+  // currency must not drop the provider's `calendar` (or timezone) and quietly
+  // stop observing holidays.
+  const providers: Record<string, ProviderCurrency> = { ...base.providers }
+  for (const [id, provider] of Object.entries(overlay.providers)) {
+    providers[id] = { ...providers[id], ...provider }
+  }
+
+  // Calendars merge as a UNION per name. A calendar is a set of dates and the
+  // operation writers actually perform is "add next year's notice", so union
+  // makes that append safe by construction — per-name replacement would wipe
+  // the shipped years the moment an agent added one.
+  const calendars: Record<string, string[]> = { ...base.calendars }
+  for (const [name, dates] of Object.entries(overlay.calendars ?? {})) {
+    calendars[name] = [...new Set([...(calendars[name] ?? []), ...dates])].sort()
+  }
+
   return {
-    providers: { ...base.providers, ...overlay.providers },
+    providers,
     models: [...merged.values()],
+    ...(Object.keys(calendars).length === 0 ? {} : { calendars }),
   }
 }

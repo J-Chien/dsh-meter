@@ -9,6 +9,8 @@ import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } f
 import { aggregateTurns, turnSnapshots, turnGrowths, turnGrowthByTurn, estimateCompactionGrowth, estimateCompactionEta, findPriceRow, anyPeakActive, deepEqualJson } from '../src/shared.ts'
 import { DEFAULT_TIMEZONE, DEEPSEEK_PEAK_WINDOWS, DEEPSEEK_PROVIDER_IDS } from '../src/shared.ts'
 import { officialPeakPeriods } from '../src/client/preset.ts'
+import { calendarCoverage, expandCalendarDates } from '../src/calendar.ts'
+import { DEFAULT_CALENDARS } from '../src/host/default-prices.ts'
 import { isIanaTimezone, matchTimezones, timezoneChoices } from '../src/client/timezones.ts'
 import type { PriceTable, TurnCost } from '../src/shared.ts'
 import type { SubagentsBillingStats } from '../src/shared.ts'
@@ -25,9 +27,9 @@ assert.equal(formatPrice(priceTokens(1_000_000, cnyPerMillion(1)), '¥'), '¥1.0
 // --- effectivePrice: default table ---
 const t = DEFAULT_TABLE
 assert.deepEqual(effectivePrice(t, 'wpsai', 'deepseek/deepseek-v4-flash', undefined, Date.parse('2026-08-17T12:00:00+08:00')), {
-  input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02), cacheWrite: 0, period: 'off-peak', found: true,
+  input: cnyPerMillion(1), output: cnyPerMillion(2), cacheInput: cnyPerMillion(0.02), cacheWrite: 0, period: 'off-peak', holiday: false, found: true,
 })
-assert.deepEqual(effectivePrice(t, 'wpsai', 'unknown/model', undefined, Date.now()), { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', found: false })
+assert.deepEqual(effectivePrice(t, 'wpsai', 'unknown/model', undefined, Date.now()), { input: 0, output: 0, cacheInput: 0, cacheWrite: 0, period: 'off-peak', holiday: false, found: false })
 
 // --- inPeakWindow (overnight 22→06) ---
 const peak = { startHour: 22, endHour: 6, input: 1, output: 1, cacheInput: 1 }
@@ -551,12 +553,12 @@ const peakTierTable: PriceTable = {
 // 10:00 peak, 40K input → base range index 1 (32K+) → PERIOD's tier[1] (12/42).
 const peakTier = effectivePrice(peakTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T10:00:00+08:00'), 40_000, 500)
 assert.deepEqual(peakTier, {
-  input: cnyPerMillion(12), output: cnyPerMillion(42), cacheInput: cnyPerMillion(3), cacheWrite: 0, period: 'peak', found: true,
+  input: cnyPerMillion(12), output: cnyPerMillion(42), cacheInput: cnyPerMillion(3), cacheWrite: 0, period: 'peak', holiday: false, found: true,
 }, 'active peak uses per-index period price for base range 1')
 // 10:00 peak, 10K input → base range index 0 → PERIOD's tier[0] (9/36).
 const peakTierShort = effectivePrice(peakTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T10:00:00+08:00'), 10_000, 100)
 assert.deepEqual(peakTierShort, {
-  input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'peak', found: true,
+  input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'peak', holiday: false, found: true,
 }, 'active peak uses per-index period price for base range 0')
 // A peak period WITHOUT per-tier prices uses its flat price even for tiered models.
 const peakNoTiersTable: PriceTable = {
@@ -577,7 +579,7 @@ const peakNoTiersTable: PriceTable = {
 }
 const peakFlat = effectivePrice(peakNoTiersTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T10:00:00+08:00'), 40_000, 500)
 assert.deepEqual(peakFlat, {
-  input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'peak', found: true,
+  input: cnyPerMillion(9), output: cnyPerMillion(36), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'peak', holiday: false, found: true,
 }, 'period without per-tier prices uses its flat price')
 
 // --- default tier = unbounded (all lengths) acts as the fallback; specific
@@ -597,17 +599,17 @@ const defaultTierTable: PriceTable = {
 // 40K input → matches tier 1 (32K+) → 8/28.
 const dtLong = effectivePrice(defaultTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T12:00:00+08:00'), 40_000, 500)
 assert.deepEqual(dtLong, {
-  input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'off-peak', found: true,
+  input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'off-peak', holiday: false, found: true,
 }, 'specific range tier wins over the unbounded default tier')
 // 10K input → no specific tier matches → falls back to the default (tier 0) prices.
 const dtShort = effectivePrice(defaultTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T12:00:00+08:00'), 10_000, 100)
 assert.deepEqual(dtShort, {
-  input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0, period: 'off-peak', found: true,
+  input: cnyPerMillion(6), output: cnyPerMillion(24), cacheInput: cnyPerMillion(1.3), cacheWrite: 0, period: 'off-peak', holiday: false, found: true,
 }, 'unbounded default tier is the fallback for unmatched lengths')
 // A tier-only table with NO unbounded tier and NO flat fallback: 50K matches 32K+.
 const dtOnly = effectivePrice(defaultTierTable, 'zai', 'glm-5.1', undefined, at('2026-08-17T12:00:00+08:00'), 50_000, 500)
 assert.deepEqual(dtOnly, {
-  input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'off-peak', found: true,
+  input: cnyPerMillion(8), output: cnyPerMillion(28), cacheInput: cnyPerMillion(2), cacheWrite: 0, period: 'off-peak', holiday: false, found: true,
 }, '50K still matches the 32K+ tier')
 
 console.log('ALL NEW CHECKS PASSED')
@@ -1157,3 +1159,97 @@ if (engineChoices.length > 0) {
 }
 
 console.log('TIMEZONE COMBOBOX CHECK PASSED')
+
+// --- statutory-holiday calendars ---
+// DeepSeek's rule is 高峰 = 周一至周五（不含中国法定节假日）, so a holiday suspends
+// the day's peak windows. The cases below are the 2026 官方安排
+// (国办发明电〔2025〕7号) and lock the two things a naive implementation gets
+// wrong: 调休 workdays must stay OFF-peak, and an uncovered year must be visible.
+const holidayAt = (iso: string, provider = 'deepseek-official') =>
+  effectivePrice(t, provider, 'deepseek-flash', undefined, at(iso))
+
+// 国庆 10-01 是周四：本应在上午高峰内，节假日把它整天空闲化。
+{
+  const holiday = holidayAt('2026-10-01T10:00:00+08:00')
+  assert.equal(holiday.period, 'off-peak', 'a statutory holiday is off-peak')
+  assert.equal(holiday.holiday, true, 'and says the holiday is why')
+  assert.equal(holiday.input, cnyPerMillion(1), 'at the off-peak rate')
+  // The control: the same weekday one week earlier is an ordinary peak morning.
+  const ordinary = holidayAt('2026-09-24T10:00:00+08:00')
+  assert.equal(ordinary.period, 'peak', 'an ordinary Thursday is still peak')
+  assert.equal(ordinary.holiday, false, 'with no holiday flag')
+  assert.equal(ordinary.input, cnyPerMillion(2), 'and the peak rate')
+}
+
+// 春节 02-15..02-23 覆盖两周：区间中间的周二同样是空闲。
+{
+  assert.equal(holidayAt('2026-02-17T10:00:00+08:00').holiday, true, 'mid-range holiday weekdays are off-peak')
+  assert.equal(holidayAt('2026-02-17T15:00:00+08:00').period, 'off-peak', 'both peak windows are suspended')
+  assert.equal(holidayAt('2026-02-24T10:00:00+08:00').period, 'peak', 'the first working day after is peak again')
+}
+
+// 调休上班日（2026 年六个全在周末）必须保持空闲，且不是"节假日豁免"。
+// A workday library would call these peak — the opposite of the published rule.
+for (const makeup of ['2026-01-04', '2026-02-14', '2026-02-28', '2026-05-09', '2026-09-20', '2026-10-10']) {
+  const priced = holidayAt(`${makeup}T10:00:00+08:00`)
+  assert.equal(priced.period, 'off-peak', `${makeup} (调休上班的周末) stays off-peak`)
+  assert.equal(priced.holiday, false, `${makeup} is off-peak because it is a weekend, not because of a holiday`)
+}
+
+// The date is a LOCAL date in the provider's clock, never a UTC slice. The
+// discriminating instant is one whose UTC date differs from its Beijing date:
+// 2026-10-01T00:30+08:00 is 2026-09-30T16:30Z — the UTC date is NOT in the
+// calendar, the Beijing date is. A UTC-slicing implementation gets this wrong.
+{
+  assert.equal(holidayAt('2026-10-01T00:30:00+08:00').holiday, true, 'just after Beijing midnight is inside the holiday')
+  assert.equal(holidayAt('2026-09-30T23:30:00+08:00').holiday, false, 'half an hour earlier is still September')
+  // The same two instants spelled in UTC must judge identically — the clock
+  // that decides is the provider's, not the one the timestamp is written in.
+  assert.equal(holidayAt('2026-09-30T16:30:00Z').holiday, true, 'a UTC-stamped instant judges in the provider clock')
+  assert.equal(holidayAt('2026-09-30T15:30:00Z').holiday, false, 'and so does its neighbour')
+}
+
+// 2025 arrangement (国办发明电〔2024〕12号) is shipped too, so historical folds
+// price right; 2027 has no notice yet and must NOT be silently holiday-aware.
+{
+  assert.equal(holidayAt('2025-10-01T10:00:00+08:00').holiday, true, 'the 2025 notice is covered')
+  const gap = holidayAt('2027-10-01T10:00:00+08:00')
+  assert.equal(gap.period, 'peak', 'an uncovered year bills its holidays at peak (the pre-calendar behaviour)')
+  assert.equal(gap.holiday, false, 'and reports no holiday, so the gap is not mistaken for coverage')
+}
+
+// A provider that names no calendar is never presumed to be on holiday: a
+// gateway's peak windows are whatever its operator configured.
+{
+  assert.equal(effectivePrice(t, 'wpsai', 'deepseek/deepseek-v4-pro', undefined, at('2026-10-01T10:00:00+08:00')).holiday, false,
+    'an unopted provider ignores the calendar')
+}
+
+// Expansion and coverage reporting: ranges, YAML's own date type, and the
+// errors that must not pass silently.
+{
+  const expanded = expandCalendarDates(['2026-10-01', '2026-10-05..2026-10-07'])
+  assert.deepEqual(expanded.dates, ['2026-10-01', '2026-10-05', '2026-10-06', '2026-10-07'],
+    'ranges expand inclusively, dates stay sorted')
+  assert.equal(expanded.errors.length, 0, 'a clean list reports no errors')
+  // YAML types an unquoted date as a Date; the loader must accept it.
+  assert.deepEqual(expandCalendarDates([new Date(Date.UTC(2026, 9, 1))]).dates, ['2026-10-01'],
+    'an unquoted YAML date (a Date object) is accepted as written')
+  assert.equal(expandCalendarDates(['2026-02-30']).errors.length, 1, 'an impossible date is refused')
+  assert.equal(expandCalendarDates(['2026-10-07..2026-10-01']).errors.length, 1, 'a backwards range is refused')
+  assert.equal(expandCalendarDates(['国庆']).errors.length, 1, 'a non-date is refused')
+  assert.equal(expandCalendarDates([2026]).errors.length, 1, 'a bare number is refused')
+  const acrossYears = expandCalendarDates(['2025-12-31..2026-01-02']).dates
+  assert.deepEqual(acrossYears, ['2025-12-31', '2026-01-01', '2026-01-02'], 'a range may cross a year boundary')
+
+  const coverage = calendarCoverage({ ...DEFAULT_CALENDARS, cn: [...(DEFAULT_CALENDARS.cn ?? []), '2027-10-01..2027-10-07'] })
+  assert.equal(coverage.names.includes('cn'), true, 'the shipped calendar is named cn')
+  assert.deepEqual(coverage.years, [2025, 2026, 2027], 'coverage reports which years are priced')
+  assert.equal(coverage.from, '2025-01-01', 'coverage reports its first date')
+  assert.equal(coverage.to, '2027-10-07', 'and its last')
+  assert.equal(coverage.byName.cn !== undefined && coverage.byName.cn > 61, true, 'per-calendar counts are expanded dates')
+  // A calendar with ranges only must still report real dates, not range strings.
+  assert.equal(/\.\./.test(coverage.to ?? ''), false, 'coverage never reports a range string as a date')
+}
+
+console.log('HOLIDAY CALENDAR CHECK PASSED')
