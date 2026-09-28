@@ -5,6 +5,18 @@
 
 ---
 
+### v0.3.30（适配 DSH 0.2.0-rc.1；peer 区间一次放开到整条 0.x，之后 0.x 发版不再改号）
+
+DSH 桌面端升到 0.2.0-rc.1 后，内置的 17 个 `@deepseek-ai/dsh-*` 运行时包同步升到 0.2.0-rc.1，而 0.3.29 的 peer 还是 `^0.1.7-rc.2`（语义上只覆盖 <0.2.0），应用内插件管理器的安装前置校验（`evaluatePluginCompatibility`，逐条 peer 区间比对运行时版本、includePrerelease）直接拒绝加载 dsh-meter。
+
+- **兼容性修复（根因）**：peerDependencies 的 16 个 `@deepseek-ai/dsh-*` 区间由 `^0.1.7-rc.2` 放开为 `>=0.1.7-rc.2 <1.0.0`。用应用内实际打包的 `evaluatePluginCompatibility` 对打包产物 manifest 跑 0.2.0-rc.1 → 兼容；对 0.3.29 的 manifest 能复现原始拒绝信息。`workspace:*` 之外这是 DSH 唯一承认的「面向未来的宽区间」写法（`workspace:^`/`~`/`*` 只在源码工作区安装时可用，独立包用不了）。
+- **防抖（本版的主要目的）**：0.x 线内 DSH 每次发版（0.2.0-rc.1、未来的 0.3/0.4…0.9）不再需要跟着改 peer 号；`<1.0.0` 保留 1.0 这一道真实分界线，届时只需重新核对一次 API。仍然停留 0.1.7-rc.1 / 0.1.5-rc.2 的老环境会被区间正确拒绝，继续用 0.3.23 / 0.3.21。
+- **dev 依赖统一升到 0.2.0-rc.1**（17 个，含 session-projection-cache），pnpm-workspace 的 `minimumReleaseAgeExclude` 全量追加 `0.2.0-rc.1`。
+- **0.1.7-rc.2 → 0.2.0-rc.1 API 影响面已逐文件核对（type 层面零破坏）**：两版从 npm 各装一份，对插件用到的 16 个包做 .d.ts 全量 diff——dsh-session 仅新增 `ToolCallRecovery` 导出、dsh-api-remotes 新增一个 type re-export、dsh-client-ui-primitives 新增 `pointerModality`、dsh-client-ui-conversation 只动 composer/draft/input 内部（`conversation.session.header.actions`、`settings.plugin.item` 两个槽位契约逐字未变），其余包逐文件相同；`SESSION_FORMAT_VERSION` 仍是 4。`tsc` 两套零错误 + `pnpm build` + `pnpm smoke` A1–A8/B 全 PASS + `pnpm test` 全 PASS，与 0.3.29 相比代码零改动。
+- **文档**：README 版本要求改写为「0.x 整线覆盖 + 1.0 需重核」；迁移小节里过时的「`0.1.0-rc.7`」更正为 `0.2.0-rc.1`。
+
+---
+
 ### v0.3.29（法定节假日日历：节假日不再按高峰计价）
 
 上一版把"节假日未建模"写成了已知缺口。本版按讨论的方案 A 补上：**命名日历 + provider 显式 opt-in**。

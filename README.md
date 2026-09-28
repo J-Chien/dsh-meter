@@ -95,7 +95,7 @@ node scripts/check-prices.mjs my-prices.yaml      # 或指定文件（装成依�
 pnpm verify   # typecheck + build + smoke（跑已构建产物）+ 全部测试
 ```
 
-> 版本要求：v0.3.24 起 peer 依赖为 `^0.1.7-rc.2`，请搭配 deepseek-harness **0.1.7-rc.2** 及以上；仍停留在 0.1.7-rc.1 / 0.1.5-rc.2 的环境请分别使用 dsh-meter 0.3.23 / 0.3.21。安装前 DSH 会按 peer 区间校验运行时版本，区间不匹配会直接拒绝安装（不是警告）。
+> 版本要求：v0.3.30 起 peer 区间为 `>=0.1.7-rc.2 <1.0.0`，覆盖 0.1.7-rc.2 到 0.9.x 的**整条 0.x 线**——DSH 后续 0.x 发版（如 0.2.0-rc.1）无需再改 peer 号，只有 1.0 需要重新核对一次；仍停留在 0.1.7-rc.1 / 0.1.5-rc.2 的环境请分别使用 dsh-meter 0.3.23 / 0.3.21。安装前 DSH 会按 peer 区间校验运行时版本，区间不匹配会直接拒绝安装（不是警告）。
 
 也可以从源码目录或 tarball 安装：
 
@@ -112,7 +112,7 @@ npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter-<version>.tgz  # pnpm 
 
 - **迁移后务必重新安装一次**——profile 的 `package.json`/`pnpm-lock.yaml` 里写有本机 `link:`/`file:` 绝对路径，重装让 pnpm 重写为目标机路径。
 - 运行数据（`~/.dsh/sessions`、`~/.dsh/settings.yaml` 的 `billing-pricing`）按用户主目录解析，跨机器/跨平台（含 Windows）自动适配。
-- `@deepseek-ai/*` 依赖全部从 npm registry 解析（均为已发布的 `0.1.0-rc.7`），无需内网/私有源。
+- `@deepseek-ai/*` 依赖全部从 npm registry 解析（均为已发布的 `0.2.0-rc.1`，类型与 0.1.7-rc.2 逐文件比对无破坏性差异），无需内网/私有源。
 
 **验证**：目标 `node_modules/dsh-meter/lib/` 存在 `index.js` + `client.js`；重启后会话右上角出现费用徽标；设置面板「插件」配置页出现「计费价格配置」卡片，价格表能编辑保存。
 
