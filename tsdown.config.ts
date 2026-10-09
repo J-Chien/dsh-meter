@@ -38,6 +38,27 @@ const CSS_VIRTUAL_SUFFIX = '\0'
 
 const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
+/**
+ * The virtual module id for one CSS-module file.
+ *
+ * It carries a REPO-RELATIVE path, never an absolute one: rolldown copies this
+ * id verbatim into `//#region \0dsh-css:<id>\0` markers in the emitted bundle,
+ * so an absolute id would ship the build machine's directory layout to every
+ * consumer (and into the published tarball). Relative is just as unique here
+ * and stays readable; a path outside the repo keeps its absolute form because
+ * nothing else can identify it.
+ */
+function cssVirtualId(abs: string): string {
+  const rel = relative(REPO_ROOT, abs).split(sep).join('/')
+  return CSS_VIRTUAL_PREFIX + (rel.startsWith('..') ? abs : rel) + CSS_VIRTUAL_SUFFIX
+}
+
+/** Resolve a virtual CSS id back to the file on disk (mirror of cssVirtualId). */
+function cssVirtualPath(virtualId: string): string {
+  const id = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+  return id.startsWith('/') || /^[A-Za-z]:/.test(id) ? id : resolve(REPO_ROOT, id)
+}
+
 /** Rebase a lib-relative source onto a browser URL mirroring the repo dirs. */
 function browserSourcePath(source: string, sourcemapPath: string): string {
   if (!source.startsWith('.')) return source
@@ -91,11 +112,15 @@ const client = {
     resolveId(source: string, importer: string | undefined) {
       if (!source.endsWith('.module.css')) return null
       const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
-      return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+      return cssVirtualId(abs)
     },
     async load(virtualId: string) {
       if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
-      const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+      // The id is repo-relative (see cssVirtualId); the file read, the watch
+      // registration and lightningcss' `filename` all use the absolute path so
+      // the CSS-module hash and the emitted class names do not depend on how
+      // the id is spelled.
+      const fileId = cssVirtualPath(virtualId)
       this.addWatchFile(fileId)
       const source = await readFile(fileId)
       const { code, exports: cssExports } = transform({
