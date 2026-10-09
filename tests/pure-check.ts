@@ -847,6 +847,7 @@ console.log('TURN GROWTH MAP CHECK PASSED')
 
 // --- subagent pure fold: discovery, activity judging, aggregation ---
 import { discoverSubagentNodes, isDescendantHeader, hasOpenTurn, aggregateSubagentStats } from '../src/host/subagent-pure.ts'
+import { subagentDotState } from '../src/client/subagent-dot.ts'
 import type { SessionHeader } from '@deepseek-ai/dsh-session'
 
 const ts = (ms: number) => ms
@@ -869,6 +870,14 @@ assert.equal(hasOpenTurn([
 assert.equal(hasOpenTurn([
   { type: 'assistant/message', seq: SQ(0), time: ts(1), data: { turn: 1, step: 1, message: assistantMessage('p', 'm') }, surfaceOp: 'append' },
 ] as never), false, 'no boundary at all → not running')
+
+// Activity → the harness's official StateDot state (the client mapping behind
+// the card's subagent rows): a live child SPINS, a closed turn is the solid
+// success dot, and a persistence-only child stays neutral — claiming "done"
+// for it would assert completion the folded data cannot back.
+assert.equal(subagentDotState('running'), 'ongoing', 'running renders as the official spinner')
+assert.equal(subagentDotState('inactive'), 'done', 'a closed turn renders as the solid success dot')
+assert.equal(subagentDotState('cold'), 'idle', 'a cold child renders neutral, never "done"')
 
 // Discovery: pre-order, depth by BILLABLE hops (ordinary/fork nodes add none),
 // fork cycles terminate via the visited set.

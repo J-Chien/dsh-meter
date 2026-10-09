@@ -9,11 +9,12 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  IconDataOutlineMedium, IconListPenOutlineMedium, IconRefreshOutlineMedium, IconSettingsOutlineMedium,
+  IconDataOutlineMedium, IconListPenOutlineMedium, IconRefreshOutlineMedium, IconSettingsOutlineMedium, StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, anyPeakActive, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, aggregateTurns, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
 import { formatCacheHitPercent, formatCompactTok, formatExactTok, formatPrice, formatTime, formatTokens } from './format.ts'
+import { subagentDotState } from './subagent-dot.ts'
 import { refreshSessionStats, getSubagentsStats } from './billing-api.ts'
 import { usePricingTable } from './pricing-scope.ts'
 import { openBillingSettings } from './settings-nav.ts'
@@ -774,8 +775,17 @@ function SubagentsSection({ sessionId, t, reloadKey }: {
     <div className={css.subsBlock}>
       <div className={css.subsHead}>
         <span className={css.subsLabel}>{t('subagents.title')}</span>
+        {/* Same live indicator the official header uses: the StateDot spinner,
+            NOT a `●` glyph. The count text carries the meaning (the dot is
+            aria-hidden), so the two never disagree about what "running" looks
+            like. */}
         <span className={css.subsRunning}>
-          {stats.runningCount > 0 ? `● ${t('subagents.running').replace('{count}', String(stats.runningCount))}` : ''}
+          {stats.runningCount > 0 ? (
+            <>
+              <StateDot state="ongoing" />
+              {t('subagents.running').replace('{count}', String(stats.runningCount))}
+            </>
+          ) : ''}
         </span>
         <span className={css.subsSummary}>
           {t('subagents.summary')
@@ -802,7 +812,11 @@ function SubagentsSection({ sessionId, t, reloadKey }: {
   )
 }
 
-/** One subagent line: depth indent, activity dot, name, token totals, cost. */
+/** One subagent line: depth indent, the official status dot, name, token
+ *  totals, cost. The dot is the harness's own `StateDot` (see
+ *  `./subagent-dot.ts`), so a row reads exactly like the official subagent
+ *  list: spinner = running, solid success dot = turn closed, neutral dot =
+ *  persistence-only history. */
 function SubagentRowView({ row, t }: {
   row: SubagentBillingRow
   t: (key: BillingKey) => string
@@ -825,9 +839,12 @@ function SubagentRowView({ row, t }: {
       onPointerLeave={() => setTooltipAnchor(null)}
     >
       <span
-        className={`${css.subsDot}${row.activity !== 'running' ? ` ${css.subsDotOff}` : ''}${row.activity === 'cold' ? ` ${css.subsDotCold}` : ''}`}
+        className={css.subsActivity}
+        role="img"
         aria-label={t(`subagent.${row.activity}` as BillingKey)}
-      />
+      >
+        <StateDot state={subagentDotState(row.activity)} />
+      </span>
       <span className={css.subsName}>{subagentName(row)}</span>
       <span className={css.subsTokens}>{`${formatTokens(row.inputTokens)} → ${formatTokens(row.outputTokens)}`}</span>
       <span className={`${css.subsCost}${row.unpricedRequestCount > 0 && row.requestCount === 0 ? ` ${css.subsCostUnpriced}` : ''}`}>

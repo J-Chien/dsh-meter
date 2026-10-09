@@ -5,6 +5,20 @@
 
 ---
 
+### v0.3.31（子代理状态点对齐官方 `StateDot` 语义：旋转环=运行中、实心绿点=已结束、中性点=历史冷会话）
+
+v0.3.30 的卡片「子代理」小节用自绘状态点（绿=运行中、空心=历史），与官方 `ui-subagent` 的 `StateDot` 语义恰好相反——官方语言里「绿」= 已结束。用户会按官方习惯读错状态，本版把卡片的状态语言换成官方的**同一个组件**。
+
+- **映射（新增 `src/client/subagent-dot.ts`，纯函数）**：`running → ongoing`（旋转环：进行中）、`inactive → done`（实心绿点：轮次已闭合）、`cold → idle`（中性点：冷会话的 live 日志已消失，完成与否**不可知**，绝不冒充 done）。独立成模块只为可测试——`StateDotState` 与 activity 两侧都只做类型导入。
+- **每行状态点**：自绘小圆点替换为官方 `StateDot` 组件，套进固定 14px 槽位（对齐官方行的 `rowActivitySlot`：宽旋转环与窄实心点共一条光学轴，行名不错位）；`role="img"` + 原 aria-label 保留。`.subsDot/.subsDotOff/.subsDotCold` 三个类合并为 `.subsActivity`，插件不再自绘任何状态色。
+- **头部「运行中 N」**：`●` 字形换成官方 `StateDot` 旋转环，计数文字承载语义（dot 为 aria-hidden），两者不会对「运行中」长得不一致。`.subsRunning` 不再涂成功绿（官方语义里绿=已结束），改 tertiary 文字色 + inline-flex；`.subsHead` 对齐从 baseline 改 center。
+- **测试**：`pure-check` 新增三条映射断言（running→ongoing / inactive→done / cold→idle）。
+- 文档：v0.3.30 小节内「卡片子代理小节」描述同步为官方语义并挂 [subagent-dot.ts](../../src/client/subagent-dot.ts) 链接。
+
+验证：tsc 两套零错误、pnpm test 全 PASS。
+
+---
+
 ### v0.3.30（适配 DSH 0.2.0-rc.1；peer 区间一次放开到整条 0.x，之后 0.x 发版不再改号）
 
 DSH 桌面端升到 0.2.0-rc.1 后，内置的 17 个 `@deepseek-ai/dsh-*` 运行时包同步升到 0.2.0-rc.1，而 0.3.29 的 peer 还是 `^0.1.7-rc.2`（语义上只覆盖 <0.2.0），应用内插件管理器的安装前置校验（`evaluatePluginCompatibility`，逐条 peer 区间比对运行时版本、includePrerelease）直接拒绝加载 dsh-meter。
@@ -157,7 +171,7 @@ subagent 在 harness 中是**独立会话**（header `origin: 'subagent'` + `par
 - **枚举语义（对齐 harness `listDescendants`）**：live-preferred 双源语料（`ctx.sessions` + 可选 `sessionPersistence.list()`），live 记录整 id 优先；沿 header `parentSession` 树 pre-order 遍历（兄弟按 createdAt→id 排序），只有 `origin: 'subagent'` 的节点计为子代理——普通/fork 分支继续向下穿透（连续型子代理可能挂在其下）但**不增加计费深度**；visited 集合防 fork 回环。深度 = 相对根的**可计费跳数**（直接子代 = 1）。
 - **运行态判定（纯折叠）**：log 尾部最后一个轮次边界决定——尾随 `turn/start` = 运行中；任何 `turn/end`（含 aborted/error）= 已结束；无边界 = 未开始。冷子会话读 `persistence.inspect()`（4 并发上限、单子失败降级省略该行不影响整体）；缺 persistence 时仅枚举活会话。
 - **wire 类型（shared.ts）**：`SubagentBillingRow`（sessionId/label/depth/activity/requestCount/unpriced/inputTokens/outputTokens/per 币种 cost）+ `SubagentsBillingStats`（directCount/totalCount/runningCount/totals/per 币种 `billedCount`/cost/children/truncated）；行列表截断于 `SUBAGENT_ROWS_CAP=100`（合计与 `billedCount` 仍覆盖全部发现节点），发现树硬上限 `SUBAGENT_TREE_CAP=500`。label 取自子日志最后一条 `subagent/descriptor` 事件的 data.label（one-shot 可缺省 → 卡片显示短 id；类型标签在 envelope 层，dsh-subagent 不在依赖表内故结构化读取）。「平均费用」不入 wire——客户端用全量口径的 `billedCount` 现算除法（截断时可见行数不足以做分母），避免第二处口径漂移。
-- **卡片「子代理」小节**：位于逐轮图与上下文占用条之间——汇总行（运行中 N 红点提示 + 直接/总计个数）+ 合计/平均费用行 + 每子代一行（深度缩进、活动圆点：绿=运行中/灰=结束/空心=历史冷会话、名称、输入→输出 token、右侧费用；未登记标琥珀色「未登记」）；超过 100 行时显示「仅显示前 100 行，合计已包含全部」。数据独立拉取：卡片打开即取，有运行中子代期间 5s 轮询自续（关闭卡片即停），点刷新按钮与主统计一起重取；无子代会话整节隐藏。**头部徽标与 hero 数字保持本会话口径不变**，子代费用独立成节不混入（多币种各自分列，不做汇率换算）。
+- **卡片「子代理」小节**：位于逐轮图与上下文占用条之间——汇总行（运行中 N + 官方 `StateDot` 旋转环 + 直接/总计个数）+ 合计/平均费用行 + 每子代一行（深度缩进、官方 `StateDot` 状态点——旋转环=运行中/实心绿点=已结束/中性灰点=历史冷会话；自绘的「绿=运行中、空心=历史」已在后续改动中按官方语义对齐，映射见 [subagent-dot.ts](../../src/client/subagent-dot.ts)、名称、输入→输出 token、右侧费用；未登记标琥珀色「未登记」）；超过 100 行时显示「仅显示前 100 行，合计已包含全部」。数据独立拉取：卡片打开即取，有运行中子代期间 5s 轮询自续（关闭卡片即停），点刷新按钮与主统计一起重取；无子代会话整节隐藏。**头部徽标与 hero 数字保持本会话口径不变**，子代费用独立成节不混入（多币种各自分列，不做汇率换算）。
 - **投影零改动**：`SessionBillingStats` 形状、zod schema、`stateVersion` 均不动；改动收敛在 shared wire 类型、host 新模块（`subagent-pure.ts` 纯函数 / `subagent-stats.ts` IO 编排 / index 接线路由 + 抽出 `requireSessionId` 共用校验）、client 拉取与小节渲染、locales 双语。**拉取失败静默降级**——小节整个隐藏（旧宿主缺该方法时 404，绝不在每个会话上盖一条错误；下次打开/刷新自动重试）。
 - **工程**：peer/devDep 新增 `@deepseek-ai/dsh-session-persistence`（类型擦除导入 + host 读冷会话，不引入 dsh-subagent 包——descriptor label 结构化读取）；新增测试：hasOpenTurn 边界判定（空日志/尾随 start/闭合 end/无边界）、树发现（pre-order、可计费深度、穿透普通分支、origin 无 parent 不计、未知根空结果）、聚合（直接数/运行数/token/多币种合并、130 行截断至 100 且合计仍覆盖 130）。
 

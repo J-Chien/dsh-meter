@@ -444,9 +444,12 @@
   min-width: 0;
 }
 
+/* Center, not baseline: the running pill now holds a 14px StateDot spinner
+   whose baseline would otherwise drag the count off the row. All three cells
+   are single-line text of one size, so centering changes nothing for them. */
 .subsHead {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
@@ -456,8 +459,14 @@
   min-width: 0;
 }
 
+/* The official subagent trigger's register: the SPINNER (tertiary, rotating)
+   carries "live", so the count text stays tertiary too — it is no longer
+   painted green, which in the official language means "finished". */
 .subsRunning {
-  color: var(--billing-state-success);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--billing-text-tertiary);
   white-space: nowrap;
 }
 
@@ -502,22 +511,20 @@
   border-radius: 3px;
 }
 
-.subsDot {
+/* Status slot for one subagent row. The DOT itself is the harness's own
+   `StateDot` component (14px spinner / 10px solid states, painted from the
+   theme's state tokens by ui-primitives' own stylesheet) — this plugin paints
+   no status color of its own here anymore. The fixed slot mirrors the official
+   row's `rowActivitySlot` (14px wide, centered), so the wide spinner and the
+   narrower solid dots share one optical axis and the names stay aligned
+   whether the row is running or finished. */
+.subsActivity {
+  display: inline-flex;
   flex: none;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--billing-state-success);
-}
-
-.subsDotOff {
-  background: var(--billing-text-tertiary);
-  opacity: 0.55;
-}
-
-.subsDotCold {
-  background: transparent;
-  box-shadow: inset 0 0 0 1px var(--billing-text-tertiary);
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
 }
 
 .subsName {
