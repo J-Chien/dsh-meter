@@ -717,27 +717,26 @@ assert.equal(boundMulti[boundMulti.length - 1]!.turn, 51, 'newest turn preserved
 console.log('TURN BOUND CURRENCY CHECK PASSED')
 
 // --- overnight window × days: days filter by the window's START day ---
-// The window is judged in the DEFAULT timezone (Asia/Shanghai). Dates are
-// built in LOCAL time, which on an Asia/Shanghai host IS Shanghai wall-clock;
-// the explicit timezone arg makes the semantics host-independent.
-const fridayLocal = (hour: number, min = 0) => {
-  const d = new Date(2026, 7, 21, hour, min, 0, 0) // 2026-08-21 is a Friday
-  return d.getTime()
-}
-const saturdayLocal = (hour: number, min = 0) => {
-  const d = new Date(2026, 7, 22, hour, min, 0, 0) // 2026-08-22 is a Saturday
-  return d.getTime()
-}
+// The window is judged in the PROVIDER's clock (here Asia/Shanghai), so the
+// fixtures must name Shanghai wall-clock EXPLICITLY. Building them with
+// `new Date(2026, 7, 21, 23)` reads as Shanghai only on a +08:00 host: under
+// UTC that instant is Shanghai SATURDAY 07:00, so this block passed locally and
+// failed on CI — a host-dependent test for a feature whose entire point is not
+// depending on the host (see `inPeakWindow`'s timezone argument).
+const shanghai = (day: number, hour: number, min = 0): number =>
+  at(`2026-08-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:00+08:00`)
+const fridayShanghai = (hour: number, min = 0) => shanghai(21, hour, min) // 2026-08-21 is a Friday
+const saturdayShanghai = (hour: number, min = 0) => shanghai(22, hour, min) // 2026-08-22 is a Saturday
 const SH = 'Asia/Shanghai'
 const fridayPeak = { startHour: 22, endHour: 6, days: [5], input: 1, output: 1, cacheInput: 1 }
-assert.equal(inPeakWindow(fridayPeak, fridayLocal(23), SH), true, 'Fri 23:00 in Friday window')
-assert.equal(inPeakWindow(fridayPeak, saturdayLocal(2), SH), true, 'Sat 02:00 belongs to the Friday-opened window')
-assert.equal(inPeakWindow(fridayPeak, saturdayLocal(23), SH), false, 'Sat 23:00 opens a Saturday window — not configured')
-assert.equal(inPeakWindow(fridayPeak, fridayLocal(12), SH), false, 'Fri noon outside the window')
+assert.equal(inPeakWindow(fridayPeak, fridayShanghai(23), SH), true, 'Fri 23:00 in Friday window')
+assert.equal(inPeakWindow(fridayPeak, saturdayShanghai(2), SH), true, 'Sat 02:00 belongs to the Friday-opened window')
+assert.equal(inPeakWindow(fridayPeak, saturdayShanghai(23), SH), false, 'Sat 23:00 opens a Saturday window — not configured')
+assert.equal(inPeakWindow(fridayPeak, fridayShanghai(12), SH), false, 'Fri noon outside the window')
 // start === end reads as "all day".
 const allDay = { startHour: 9, endHour: 9, input: 1, output: 1, cacheInput: 1 }
-assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 0, 0, 0, 0).getTime(), SH), true, 'start==end: midnight inside')
-assert.equal(inPeakWindow(allDay, new Date(2026, 7, 17, 12, 0, 0, 0).getTime(), SH), true, 'start==end: noon inside')
+assert.equal(inPeakWindow(allDay, shanghai(17, 0), SH), true, 'start==end: midnight inside')
+assert.equal(inPeakWindow(allDay, shanghai(17, 12), SH), true, 'start==end: noon inside')
 
 console.log('OVERNIGHT DAYS CHECK PASSED')
 

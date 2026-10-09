@@ -14,6 +14,10 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # The runner's clock is UTC; say so explicitly, so the gate never silently
+    # inherits "whatever the machine happens to be".
+    env:
+      TZ: UTC
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +37,17 @@ jobs:
 
       # typecheck + build + smoke (built artifacts) + every test suite
       - run: pnpm verify
+
+      # The peak-window and holiday logic is judged in the PROVIDER's clock,
+      # never the host's, so the suite must also pass OFF +08:00. This step is
+      # how a host-dependent fixture in tests/pure-check.ts was caught: it built
+      # "Shanghai Friday 23:00" with `new Date(2026, 7, 21, 23)`, which is
+      # Shanghai SATURDAY 07:00 under UTC — green on a +08:00 dev machine, red
+      # here. Running in a third zone keeps both directions honest.
+      - name: Re-run the suite outside the development timezone
+        run: pnpm test
+        env:
+          TZ: America/New_York
 
       - name: Upload the built bundles on failure
         if: failure()
