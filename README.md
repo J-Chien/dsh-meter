@@ -6,20 +6,33 @@ DeepSeek Harness 的**按会话计费插件**：在每个会话右上角展示�
 
 ## 效果展示
 
-会话头部费用徽标（含高峰/空闲标签）：
+> 除特别标注的一张外，以下截图取自 **v0.3.32 之后**的构建（DSH `0.2.0-rc.2`）。
 
-| ![会话头部-高峰标签](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/01-header-peak-label.png) | ![会话头部-空闲标签与多币种并列计费](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/02-header-idle-multicurrency.png) |
+会话头部费用徽标（当前会话费用 + 高峰/空闲标签）：
+
+![会话头部-高峰标签](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/01-header-peak-label.png)
+
+hover / 点击展开的统计卡片：token 用量与缓存命中率、按币种并列的费用、逐轮新增迷你图、子代理费用、上下文占用条：
+
+![统计卡片](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/03-card-hover.png)
+
+子代理小节的状态点直接复用官方 `StateDot`，判据与官方花名册**同源**（`dsh-subagent` 的 `subagentTiming.lastTurnCompleted`）——实心绿点 = 已完成、旋转环 = 运行中、中性点 = 当前未运行：
+
+![子代理状态点](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/07-subagent-status.png)
+
+逐轮消耗详情面板（费用柱状图 + 四段 token 堆叠图 + 明细表，「按轮次」/「按请求」两种粒度）：
+
+![逐轮消耗详情面板](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/04-detail-turns.png)
+
+设置页 →「插件」→「计费价格配置」：每个模型的四价与分段计费开关 · 每个模型可配多个高峰窗口（生效星期 + 每段价格）：
+
+| 模型四价 + 分段计费开关 | 高峰时段（生效星期 + 每段价格） |
 |---|---|
-
-hover/点击展开的统计卡片（token 用量、费用、逐轮消耗）：
-
-| ![统计卡片-多轮价格展示](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/03-card-hover.png) | ![逐轮消耗详情面板](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/04-detail-turns.png) |
-|---|---|
-
-设置卡片（截图为旧版独立设置页版式；0.1.7-rc.1 起位于 设置 →「插件」→「计费价格配置」）：
-
 | ![设置页-分段区间计费](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/05-settings-tiered.png) | ![设置页-高峰时段定价](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/06-settings-peak.png) |
-|---|---|
+
+> ⚠️ 下面这张是**历史截图**：空闲态 + 多币种并列计费（`¥1.20 + $0.35`）需要「USD 计价的会话」且「当前不在高峰时段」，采集这批图时两者都不满足，故无法重拍。功能未变，只是图旧。
+
+![会话头部-空闲标签与多币种并列计费](https://raw.githubusercontent.com/J-Chien/dsh-meter/main/docs/screenshots/02-header-idle-multicurrency.png)
 
 ## 功能特性
 
@@ -41,7 +54,7 @@ hover/点击展开的统计卡片（token 用量、费用、逐轮消耗）：
 - **费用**：标题右侧的总费用按币种并列（`¥1.20 + $0.35`）；配置了高峰时段时额外展示「空闲时段」「高峰时段」两行拆分。
 - **上下文占用条（压缩预测）**：最近一次请求输入 ÷ provider 声明的输入+输出总窗口（来自日志 `request/context`），显示进度条 + `已用 / 窗口` + `输出上限`；≥85% 预警「接近上限，建议开新会话」。含 80% 压缩触发参考线、压缩历史（已压缩 N 次 · 释放 X tokens · 摘要花费——压缩摘要调用是真实 provider 请求，其费用计入总额）与压缩预估（快照差分增速外推「约 N 轮后触发压缩」，余量可心算验证）。任一数据缺省则不显示（不估算）。
 - **每轮新增迷你图**：每轮一根新增占用 token 竖条（快照差分口径，免疫缓存失效；最老轮在左、从左到右 3px 等距排列；**第 1 轮的新增 = 其整轮快照**——它的前驱是空上下文，首轮装载的所有内容都是新增），高峰轮暖色着色，hover 出统一 tooltip；按卡片实际宽度自适应轮数。
-- **子代理小节**：列出本会话派生的子代理及其费用；状态点直接复用官方 `StateDot` 组件（`running → ongoing` 旋转环、`inactive → done` 实心绿点、`cold → idle` 中性点——冷会话完成与否不可知，绝不冒充 done），映射见 `src/client/subagent-dot.ts`。
+- **子代理小节**（见上方截图）：列出本会话派生的子代理及其费用（直接/总数、合计与平均）。状态点复用官方 `StateDot` 组件，**判据与官方花名册同源**——`running → ongoing`（旋转环）；日志证明「该子代理自己的 descriptor 之后、最近一次回合**正常完成**」`→ done`（实心绿点）；其余（尚未闭合 / 被中断 / 报错）`→ idle`（中性点，绝不冒充完成）。映射见 `src/client/subagent-dot.ts`，判定见 `src/host/subagent-pure.ts` 的 `lastTurnCompletedNormally`。
 - 卡片标题行的图标按钮（hover/focus 卡片时显形，无 hover 设备常显）：**刷新**（按最新价格重算当前会话）+ **查看详情**（打开逐轮消耗面板）+ **齿轮设置**（打开设置面板并**直接跳到** 设置 →「内置插件」→「计费价格」卡片；定位请求排队，卡片挂载时消费并滚到当前模型）。
 
 ### 逐轮消耗详情面板
