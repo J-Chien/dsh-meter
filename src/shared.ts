@@ -795,12 +795,15 @@ export interface SubagentBillingRow {
   /** Whether this child has any `origin: 'subagent'` descendant of its own. */
   hasChildren: boolean
   /**
-   * `running` — a LIVE child whose log tail holds an unclosed turn;
-   * `inactive` — the log tail CLOSED a turn (a live child between turns, or a
-   *   persisted child whose turn is provably closed) → the official `done` dot;
-   * `cold` — persistence-only and the log does NOT prove a closed turn (it
-   *   ends mid-turn, or carries no turn boundary): completion is unknowable,
-   *   so it must never claim the success dot.
+   * The harness's own three-way activity, so the card's dot speaks the official
+   * language: `running` = live, with an unclosed turn (the spinner);
+   * `inactive` = not running AND the latest turn after the child's own
+   * descriptor closed NORMALLY (the official `done` dot — see
+   * `lastTurnCompletedNormally` in host/subagent-pure.ts, which mirrors
+   * `dsh-subagent`'s `subagentTiming.lastTurnCompleted`); `cold` = everything
+   * else — nothing closed normally yet, or it closed abnormally (aborted /
+   * blocked / error). Completion is then unproven, so the neutral dot is the
+   * only honest answer.
    */
   activity: 'running' | 'inactive' | 'cold'
   /** Priced request count (same口径 as SessionBillingStats.requestCount). */

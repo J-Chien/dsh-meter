@@ -44,40 +44,96 @@ export function hasOpenTurn(events: readonly SessionEvent[]): boolean {
 }
 
 /**
- * Whether a log tail's last conversation turn is KNOWN to have closed:
- * `true` = the last boundary closed a turn (`turn/end`, whatever its reason),
- * `false` = the last boundary opened one (`turn/start`), `undefined` = the log
- * carries no turn boundary at all.
+ * Mirror of `@deepseek-ai/dsh-subagent`'s `subagentTiming.lastTurnCompleted`
+ * (stateVersion 3): `true` when the child's latest CLOSED turn ended with
+ * `reason.kind === 'completed'`, `false` when it closed some other way
+ * (aborted / blocked / error), `undefined` while a turn is open, before one
+ * closes, or when no descriptor was seen.
  *
- * `hasOpenTurn` answers the LIVE question ("is the driver sampling right
- * now?"), where "no boundary" reasonably reads as idle. A child read only from
- * persistence needs the other question ("can we TELL it settled?"), where "no
- * boundary" must stay unknowable instead of being silently read as finished.
- * The billing card speaks the harness's own dot language — `done` (the solid
- * success dot) is a CLAIM, so it is only made when the log proves it.
+ * The official roster paints the solid success dot ONLY when this is `true`,
+ * and the neutral dot for everything else:
+ *
+ *     completed = activity === 'inactive' && lastTurnCompleted === true
+ *     state     = running ? 'ongoing' : completed ? 'done' : 'idle'
+ *     (dsh-client-ui-subagent, StateDot call site)
+ *
+ * A coarser test — "the last boundary is a `turn/end`" — claims success for an
+ * ABORTED or FAILED turn, i.e. a false green, which is the one thing this
+ * card's status language must never do. So the fold is reproduced here rather
+ * than approximated.
+ *
+ * Descriptor discipline, copied from the same definition: a fork seed replays
+ * the ANCESTOR's descriptor and its completed turns, and every
+ * `subagent/descriptor` RESETS the fold — so only turns after the child's OWN
+ * descriptor count. A `turn/start` clears the claim (the turn is open again).
+ *
+ * @param events - the child's logical log, in order.
+ * @returns `true`/`false` once a qualifying turn closed, else `undefined`.
  */
-export function closedTurn(events: readonly SessionEvent[]): boolean | undefined {
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const type = events[i]?.type
-    if (type === 'turn/end') return true
-    if (type === 'turn/start') return false
+export function lastTurnCompletedNormally(events: readonly SessionEvent[]): boolean | undefined {
+  let descriptorSeen = false
+  /** A turn started after the descriptor and has not closed yet. */
+  let activeOpen = false
+  /** A turn started BEFORE the descriptor: promoted onto the descriptor. */
+  let pendingTurnStart = false
+  let lastTurnCompleted: boolean | undefined
+  for (const event of events) {
+    // `SessionEventMap` is merge-extensible and `subagent/descriptor` is
+    // declared by `dsh-subagent`, which this plugin does not import — so that
+    // one is compared through a widened string (the same reason `readLabel`
+    // casts). `turn/start` and `turn/end` ARE in the map and narrow normally.
+    if (event.type === 'turn/end') {
+      if (!descriptorSeen) {
+        // Turns from the fork seed, before the child's own origin: not ours.
+        pendingTurnStart = false
+        continue
+      }
+      if (!activeOpen) continue
+      activeOpen = false
+      lastTurnCompleted = event.data.reason.kind === 'completed'
+      continue
+    }
+    const type: string = event.type
+    if (type === 'turn/start') {
+      lastTurnCompleted = undefined
+      if (descriptorSeen) activeOpen = true
+      else pendingTurnStart = true
+      continue
+    }
+    if (type === 'subagent/descriptor') {
+      // The child's own timing origin: reset, adopting a turn that was already
+      // open when the descriptor arrived.
+      activeOpen = activeOpen || pendingTurnStart
+      pendingTurnStart = false
+      descriptorSeen = true
+      lastTurnCompleted = undefined
+      continue
+    }
   }
-  return undefined
+  return lastTurnCompleted
 }
 
 /**
- * The activity of a child known ONLY from its persisted log — the single
- * decision both cold-fold call sites make (the route's budgeted read and the
- * background warmer), so the two can never drift apart again.
+ * The child's activity, decided from its log alone, in the harness's own three
+ * values — the single decision every call site makes (the live path and both
+ * cold-fold paths), so they can never drift apart.
  *
- * A child in the live store is `running`/`inactive` by {@link hasOpenTurn};
- * a persistence-only child used to be parked on `cold` unconditionally, which
- * is what put the card's neutral dot next to children the official roster
- * showed as finished. The log is already in hand at both call sites, so it
- * answers the question directly.
+ * - `running` — `live` and the log tail holds an unclosed turn (the spinner);
+ * - `inactive` — NOT running while {@link lastTurnCompletedNormally} is `true`
+ *   (the official success dot);
+ * - `cold` — anything else: nothing closed normally yet, it closed abnormally,
+ *   or (persisted-only) a turn is left open by a session that is not running
+ *   any more. Completion is unproven, so the neutral dot is the honest answer.
+ *
+ * @param events - the child's logical log.
+ * @param live - whether the child is still in the live session store.
  */
-export function persistedActivity(events: readonly SessionEvent[]): 'inactive' | 'cold' {
-  return closedTurn(events) === true ? 'inactive' : 'cold'
+export function subagentActivity(
+  events: readonly SessionEvent[],
+  live: boolean,
+): 'running' | 'inactive' | 'cold' {
+  if (live && hasOpenTurn(events)) return 'running'
+  return lastTurnCompletedNormally(events) === true ? 'inactive' : 'cold'
 }
 
 /** One corpus entry: a session identity's immutable header. */

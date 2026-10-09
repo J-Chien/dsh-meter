@@ -9,9 +9,9 @@
  *    default fold on every non-turn field, and stay correct on a large log;
  *  - the resolved-table guard must fail a non-finite row CLOSED without
  *    taking the rest of the table with it;
- *  - a persistence-only subagent whose log proves its last turn closed must
- *    read as `inactive` (the official `done` dot) instead of the neutral
- *    `cold` dot the card used to show for finished children.
+ *  - a subagent whose latest turn after its OWN descriptor completed NORMALLY
+ *    must read as `inactive` (the official `done` dot), while one that closed
+ *    abnormally or is still open stays `cold` — never a false success.
  *
  * Run: node --disable-warning=ExperimentalWarning tests/host-regression-check.ts
  */
@@ -24,7 +24,7 @@ import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { parsePriceFile } from '../src/host/price-file.ts'
 import { priceTokens, dropNonFiniteRows } from '../src/host/price.ts'
 import { foldBilling } from '../src/host/session-stats.ts'
-import { closedTurn, persistedActivity } from '../src/host/subagent-pure.ts'
+import { lastTurnCompletedNormally, subagentActivity } from '../src/host/subagent-pure.ts'
 import type { PriceTable, SessionBillingStats, TurnCost } from '../src/shared.ts'
 
 const at = (iso: string): number => Date.parse(iso)
@@ -375,32 +375,55 @@ console.log('LARGE NO-TURNS FOLD CHECK PASSED')
 
 console.log('RESOLVED TABLE FINITE GUARD CHECK PASSED')
 
-/* ── (g) a persisted child's settled state IS knowable ───────────────── */
+/* ── (g) the card's subagent dot uses the OFFICIAL completion rule ───── */
 
-// The card speaks the harness's own dot language, where the solid success dot
-// is a CLAIM. Both cold-fold call sites parked every persistence-only child on
-// `cold` (the neutral dot) even though the log they had just read proves
-// whether the last turn closed — so the card showed neither running nor done
-// for children the official roster rendered as finished.
+// The official roster paints the solid success dot only when
+//   completed = activity === 'inactive' && lastTurnCompleted === true
+// where `lastTurnCompleted` is `dsh-subagent`'s `subagentTiming` fold: the
+// latest turn CLOSED AFTER THE CHILD'S OWN DESCRIPTOR with
+// `reason.kind === 'completed'`. Two ways to get this wrong, both locked below:
+// parking every persisted child on the neutral dot (always idle), and the
+// coarser "the last boundary is a turn/end" (which paints an ABORTED or FAILED
+// turn green — a false success, the one thing a status dot must not claim).
 {
-  const turnStart = { type: 'turn/start', seq: SQ(0), time: 1, data: { turn: 1 } }
-  const turnEnd = { type: 'turn/end', seq: SQ(1), time: 2, data: { turn: 1, reason: { kind: 'completed' } } }
+  const desc = { type: 'subagent/descriptor', seq: SQ(0), time: 1, data: {} }
+  const tStart = (t: number) => ({ type: 'turn/start', seq: SQ(0), time: t, data: { turn: 1 } })
+  const tEnd = (t: number, kind: string) => ({ type: 'turn/end', seq: SQ(1), time: t, data: { turn: 1, reason: { kind } } })
+  const done = tEnd(5, 'completed')
+  const aborted = tEnd(5, 'aborted')
 
-  assert.equal(closedTurn([] as never), undefined, 'empty log → unknowable')
-  assert.equal(closedTurn([msg(2, 3, 10, 5, 0)] as never), undefined,
-    'chatter with no turn boundary → unknowable (never read as finished)')
-  assert.equal(closedTurn([turnStart] as never), false, 'trailing turn/start → not closed')
-  assert.equal(closedTurn([turnStart, turnEnd] as never), true, 'trailing turn/end → closed')
-  assert.equal(closedTurn([turnStart, msg(2, 3, 10, 5, 0)] as never), false,
-    'chatter after an open turn/start does not close it')
-  assert.equal(closedTurn([turnStart, turnEnd, turnStart] as never), false,
-    'a NEW turn after a close is open again')
+  // ── the fold itself ──
+  assert.equal(lastTurnCompletedNormally([] as never), undefined, 'empty log → no claim')
+  assert.equal(lastTurnCompletedNormally([desc] as never), undefined, 'descriptor alone → no claim')
+  assert.equal(lastTurnCompletedNormally([desc, tStart(2)] as never), undefined, 'a turn is still open → no claim')
+  assert.equal(lastTurnCompletedNormally([tEnd(2, 'completed')] as never), undefined,
+    'a turn/end with no open turn changes nothing')
+  assert.equal(lastTurnCompletedNormally([desc, tStart(2), done] as never), true,
+    'descriptor → turn/start → turn/end(completed) → the official done')
+  assert.equal(lastTurnCompletedNormally([desc, tStart(2), aborted] as never), false,
+    'an ABORTED turn closed, but it did NOT complete — never green')
+  assert.equal(lastTurnCompletedNormally([desc, tStart(2), tEnd(5, 'error')] as never), false,
+    'a FAILED turn likewise closes without completing')
+  assert.equal(lastTurnCompletedNormally([desc, tStart(2), done, tStart(9)] as never), undefined,
+    'a later turn/start CLEARS the claim (the turn is open again)')
+  assert.equal(lastTurnCompletedNormally([tStart(2), done, desc] as never), undefined,
+    'turns from the FORK SEED (before the child own descriptor) do not count')
 
-  assert.equal(persistedActivity([] as never), 'cold', 'unknowable stays on the neutral dot')
-  assert.equal(persistedActivity([turnStart] as never), 'cold', 'an unclosed persisted turn is not claimed done')
-  assert.equal(persistedActivity([msg(2, 3, 10, 5, 0)] as never), 'cold', 'a boundary-less log is not claimed done')
-  assert.equal(persistedActivity([turnStart, turnEnd] as never), 'inactive',
-    'a closed turn PROVES done — the official green dot')
+  // ── the three-way activity every call site uses ──
+  assert.equal(subagentActivity([] as never, true), 'cold', 'live but nothing ran → neutral')
+  assert.equal(subagentActivity([desc, tStart(2)] as never, true), 'running',
+    'live with an open turn → the spinner')
+  assert.equal(subagentActivity([desc, tStart(2), done] as never, true), 'inactive',
+    'live, last turn completed → the official done')
+  assert.equal(subagentActivity([desc, tStart(2), aborted] as never, true), 'cold',
+    'live after an aborted turn → neutral, not done')
+
+  assert.equal(subagentActivity([desc, tStart(2)] as never, false), 'cold',
+    'persisted with an open turn is NOT running — a host-only session cannot be sampling')
+  assert.equal(subagentActivity([desc, tStart(2), done] as never, false), 'inactive',
+    'persisted with a normally-completed turn → the official done (this is the reported bug)')
+  assert.equal(subagentActivity([desc, tStart(2), aborted] as never, false), 'cold',
+    'persisted after an aborted turn → neutral')
 }
 
 console.log('SUBAGENT ACTIVITY CHECK PASSED')

@@ -19,7 +19,7 @@ import { foldBilling } from './session-stats.ts'
 import type { PriceTable } from '../shared.ts'
 import type { SubagentBillingRow, SubagentsBillingStats } from '../shared.ts'
 import {
-  discoverSubagentNodes, hasOpenTurn, persistedActivity, aggregateSubagentStats,
+  discoverSubagentNodes, subagentActivity, aggregateSubagentStats,
   EMPTY_SUBAGENTS_STATS, type SubagentCorpusRecord,
 } from './subagent-pure.ts'
 
@@ -203,7 +203,7 @@ export async function subagentsForSession(
         id: node.id,
         depth: node.depth,
         hasChildren: node.hasChildren,
-        activity: hasOpenTurn(session.snapshotEvents()) ? 'running' : 'inactive',
+        activity: subagentActivity(session.snapshotEvents(), true),
         events: session.snapshotEvents(),
       }, table)
       cache.set(node.id, { watermark, tableFingerprint: fingerprint, row })
@@ -238,11 +238,12 @@ export async function subagentsForSession(
         id: node.id,
         depth: node.depth,
         hasChildren: node.hasChildren,
-        // The persisted log is right here, so judge it instead of parking the
-        // child on the neutral dot: a closed turn is PROOF of `done`, and the
-        // official roster shows that child green. Only a log that does not
-        // prove closure (ends mid-turn / has no boundary) stays `cold`.
-        activity: persistedActivity(events),
+        // The persisted log is right here, so judge it with the harness's own
+        // rule instead of parking the child on the neutral dot: a turn that
+        // closed NORMALLY after the child's descriptor is exactly what the
+        // official roster paints green. Everything else stays `cold` — the
+        // log cannot prove success, and the success dot is a claim.
+        activity: subagentActivity(events, false),
         events,
       }, table)
       cache.set(node.id, {
@@ -331,8 +332,8 @@ function scheduleWarm(
             depth: node.depth,
             hasChildren: node.hasChildren,
             // Same judgement as the route's cold path (see there): the log is
-            // in hand, so a closed turn means `done`, not "unknown".
-            activity: persistedActivity(events),
+            // in hand, so it answers the official question directly.
+            activity: subagentActivity(events, false),
             events,
           }, table)
           cache.set(node.id, {
