@@ -130,7 +130,16 @@ const client = {
         minify: true,
       })
       const classMap: Record<string, string> = {}
-      for (const [local, exp] of Object.entries(cssExports ?? {})) classMap[local] = exp.name
+      // SORTED keys: lightningcss returns its CSS-module export map from a Rust
+      // `HashMap`, whose iteration order is seeded per process. Emitting that
+      // order verbatim made `lib/client.js` differ between two builds of the
+      // SAME source (the class names were identical — only the JSON key order
+      // moved), so a rebuild could not be compared against the published
+      // artifact. The map is a lookup either way; sorting removes the only
+      // nondeterminism in the bundle.
+      const entries = Object.entries(cssExports ?? {})
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      for (const [local, exp] of entries) classMap[local] = exp.name
       const tagId = `${ID}/${basename(fileId)}`
       return [
         `const css = ${JSON.stringify(code.toString())};`,
