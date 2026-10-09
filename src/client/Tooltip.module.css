@@ -8,6 +8,17 @@
   position: fixed;
   z-index: var(--billing-z-tooltip, 1300);
   max-width: 320px;
+  /* `width: max-content` + `white-space: normal` instead of the old
+   * `white-space: nowrap`: nowrap made the text ONE unbreakable line, so a
+   * long label (a subagent row's name + input/output) simply rendered past the
+   * 320px box with `overflow: visible` — the max-width never applied. Asking
+   * for the natural width and then capping it makes short labels stay on one
+   * line while long ones wrap inside the cap, and keeps the bubble's width
+   * independent of where it is anchored. `overflow-wrap: anywhere` covers a
+   * single unbreakable token (a long model id or path). */
+  width: max-content;
+  white-space: normal;
+  overflow-wrap: anywhere;
   padding: 4px 8px;
   border: 1px solid var(--billing-border-l2);
   border-radius: var(--billing-radius-2);
@@ -21,7 +32,6 @@
   font-variant-numeric: tabular-nums;
   font-size: 11px;
   line-height: 16px;
-  white-space: nowrap;
   pointer-events: none;
   opacity: 0;
   transition: opacity var(--billing-motion-fast) var(--billing-ease);

@@ -8,7 +8,10 @@
  *  - the totals-only fold (no per-request row copying) must agree with the
  *    default fold on every non-turn field, and stay correct on a large log;
  *  - the resolved-table guard must fail a non-finite row CLOSED without
- *    taking the rest of the table with it.
+ *    taking the rest of the table with it;
+ *  - a persistence-only subagent whose log proves its last turn closed must
+ *    read as `inactive` (the official `done` dot) instead of the neutral
+ *    `cold` dot the card used to show for finished children.
  *
  * Run: node --disable-warning=ExperimentalWarning tests/host-regression-check.ts
  */
@@ -21,6 +24,7 @@ import { cnyPerMillion, DEFAULT_TABLE } from '../src/host/default-prices.ts'
 import { parsePriceFile } from '../src/host/price-file.ts'
 import { priceTokens, dropNonFiniteRows } from '../src/host/price.ts'
 import { foldBilling } from '../src/host/session-stats.ts'
+import { closedTurn, persistedActivity } from '../src/host/subagent-pure.ts'
 import type { PriceTable, SessionBillingStats, TurnCost } from '../src/shared.ts'
 
 const at = (iso: string): number => Date.parse(iso)
@@ -370,5 +374,35 @@ console.log('LARGE NO-TURNS FOLD CHECK PASSED')
 }
 
 console.log('RESOLVED TABLE FINITE GUARD CHECK PASSED')
+
+/* ── (g) a persisted child's settled state IS knowable ───────────────── */
+
+// The card speaks the harness's own dot language, where the solid success dot
+// is a CLAIM. Both cold-fold call sites parked every persistence-only child on
+// `cold` (the neutral dot) even though the log they had just read proves
+// whether the last turn closed — so the card showed neither running nor done
+// for children the official roster rendered as finished.
+{
+  const turnStart = { type: 'turn/start', seq: SQ(0), time: 1, data: { turn: 1 } }
+  const turnEnd = { type: 'turn/end', seq: SQ(1), time: 2, data: { turn: 1, reason: { kind: 'completed' } } }
+
+  assert.equal(closedTurn([] as never), undefined, 'empty log → unknowable')
+  assert.equal(closedTurn([msg(2, 3, 10, 5, 0)] as never), undefined,
+    'chatter with no turn boundary → unknowable (never read as finished)')
+  assert.equal(closedTurn([turnStart] as never), false, 'trailing turn/start → not closed')
+  assert.equal(closedTurn([turnStart, turnEnd] as never), true, 'trailing turn/end → closed')
+  assert.equal(closedTurn([turnStart, msg(2, 3, 10, 5, 0)] as never), false,
+    'chatter after an open turn/start does not close it')
+  assert.equal(closedTurn([turnStart, turnEnd, turnStart] as never), false,
+    'a NEW turn after a close is open again')
+
+  assert.equal(persistedActivity([] as never), 'cold', 'unknowable stays on the neutral dot')
+  assert.equal(persistedActivity([turnStart] as never), 'cold', 'an unclosed persisted turn is not claimed done')
+  assert.equal(persistedActivity([msg(2, 3, 10, 5, 0)] as never), 'cold', 'a boundary-less log is not claimed done')
+  assert.equal(persistedActivity([turnStart, turnEnd] as never), 'inactive',
+    'a closed turn PROVES done — the official green dot')
+}
+
+console.log('SUBAGENT ACTIVITY CHECK PASSED')
 
 console.log('ALL HOST REGRESSION CHECKS PASSED')

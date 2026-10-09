@@ -7,6 +7,7 @@
  * Run: node --disable-warning=ExperimentalWarning tests/client-regression-check.ts
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { persistedModelRows, modelRowKey } from '../src/client/settings-merge.ts'
 import type { ModelPersistInput } from '../src/client/settings-merge.ts'
 import { officialPeakPeriods } from '../src/client/preset.ts'
@@ -348,3 +349,24 @@ console.log('BILLING API VALIDATION CHECK PASSED')
 }
 
 console.log('LOCALE PARITY CHECK PASSED')
+
+// ── Tooltip layout: a long label must WRAP, never spill ────────────────────
+// The bubble carries `max-width`, but `white-space: nowrap` turned the label
+// into ONE unbreakable line that rendered straight past that cap (overflow is
+// visible), so a subagent row's name + token pair spilled across the card.
+// Node cannot measure layout, so this locks the declarations themselves: the
+// `.tooltip` rule must ask for the natural width, keep a cap, and allow
+// wrapping.
+
+{
+  const css = readFileSync(new URL('../src/client/Tooltip.module.css', import.meta.url), 'utf8')
+  // Comments are stripped: the rule's own note quotes the old declaration.
+  const rule = (css.match(/\.tooltip\s*\{([^}]*)\}/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.notEqual(rule, '', '.tooltip rule is present')
+  assert.match(rule, /max-width:\s*\d+px/, 'the bubble keeps a maximum width')
+  assert.match(rule, /white-space:\s*normal/, 'and lets a long label wrap')
+  assert.doesNotMatch(rule, /white-space:\s*nowrap/, 'never one unbreakable line — that is what defeated max-width')
+  assert.match(rule, /width:\s*max-content/, 'natural width first, then the cap (independent of the anchor position)')
+}
+
+console.log('TOOLTIP LAYOUT CHECK PASSED')

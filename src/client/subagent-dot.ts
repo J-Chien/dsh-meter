@@ -17,9 +17,11 @@ import type { SubagentBillingRow } from '../shared.ts'
 
 /**
  * `running` → `ongoing` (the spinner: live, not finished);
- * `inactive` (live child, log tail closed a turn) → `done`;
- * `cold` (persistence-only child — its live log is gone, so completion is
- * NOT knowable) → `idle`, the neutral dot: it must never claim `done`.
+ * `inactive` (the log's last turn CLOSED — a live child between turns, or a
+ * persisted child whose turn is provably closed) → `done`;
+ * `cold` (persistence-only with no closed turn in the log — it ends mid-turn
+ * or carries no turn boundary, so completion is NOT knowable) → `idle`, the
+ * neutral dot: it must never claim `done`.
  */
 export function subagentDotState(activity: SubagentBillingRow['activity']): StateDotState {
   switch (activity) {

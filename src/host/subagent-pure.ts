@@ -43,6 +43,43 @@ export function hasOpenTurn(events: readonly SessionEvent[]): boolean {
   return false
 }
 
+/**
+ * Whether a log tail's last conversation turn is KNOWN to have closed:
+ * `true` = the last boundary closed a turn (`turn/end`, whatever its reason),
+ * `false` = the last boundary opened one (`turn/start`), `undefined` = the log
+ * carries no turn boundary at all.
+ *
+ * `hasOpenTurn` answers the LIVE question ("is the driver sampling right
+ * now?"), where "no boundary" reasonably reads as idle. A child read only from
+ * persistence needs the other question ("can we TELL it settled?"), where "no
+ * boundary" must stay unknowable instead of being silently read as finished.
+ * The billing card speaks the harness's own dot language — `done` (the solid
+ * success dot) is a CLAIM, so it is only made when the log proves it.
+ */
+export function closedTurn(events: readonly SessionEvent[]): boolean | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const type = events[i]?.type
+    if (type === 'turn/end') return true
+    if (type === 'turn/start') return false
+  }
+  return undefined
+}
+
+/**
+ * The activity of a child known ONLY from its persisted log — the single
+ * decision both cold-fold call sites make (the route's budgeted read and the
+ * background warmer), so the two can never drift apart again.
+ *
+ * A child in the live store is `running`/`inactive` by {@link hasOpenTurn};
+ * a persistence-only child used to be parked on `cold` unconditionally, which
+ * is what put the card's neutral dot next to children the official roster
+ * showed as finished. The log is already in hand at both call sites, so it
+ * answers the question directly.
+ */
+export function persistedActivity(events: readonly SessionEvent[]): 'inactive' | 'cold' {
+  return closedTurn(events) === true ? 'inactive' : 'cold'
+}
+
 /** One corpus entry: a session identity's immutable header. */
 export interface SubagentCorpusRecord {
   readonly header: SessionHeader

@@ -794,7 +794,14 @@ export interface SubagentBillingRow {
   depth: number
   /** Whether this child has any `origin: 'subagent'` descendant of its own. */
   hasChildren: boolean
-  /** Running = live child whose log tail holds an unclosed turn. */
+  /**
+   * `running` — a LIVE child whose log tail holds an unclosed turn;
+   * `inactive` — the log tail CLOSED a turn (a live child between turns, or a
+   *   persisted child whose turn is provably closed) → the official `done` dot;
+   * `cold` — persistence-only and the log does NOT prove a closed turn (it
+   *   ends mid-turn, or carries no turn boundary): completion is unknowable,
+   *   so it must never claim the success dot.
+   */
   activity: 'running' | 'inactive' | 'cold'
   /** Priced request count (same口径 as SessionBillingStats.requestCount). */
   requestCount: number

@@ -23,8 +23,8 @@
  *  - opens after TOOLTIP_DELAY_MS of resting on the anchor
  *  - follows the anchor while hovered; repositions on scroll/resize
  *  - closes instantly on pointer leave, Escape, or when the anchor unmounts
- *  - above every surface this plugin owns (badge card 100 < turns mask 200
- *    < this tooltip 300)
+ *  - above every surface this plugin owns (badge card 1100 < turns mask 1200
+ *    < this tooltip 1300, see theme.module.css's stacking ladder)
  *
  * Accessible: the anchor keeps its aria-label/aria-labelledby; the tooltip
  * role='tooltip' is inert (no tab stop, no pointer events).
