@@ -1,0 +1,44 @@
+name: verify
+
+# The only gate that catches a shipped-bundle regression: `smoke` loads the
+# built `lib/index.js` and `lib/client.js`, so it notices a dropped export, a
+# broken `__ModuleLoader__` handoff or a changed slot id that unit tests and
+# tsc cannot see. Nothing ran it before this workflow existed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+          run_install: false
+
+      # Node floor is the one the README promises: `pnpm test` runs the .ts
+      # suites directly through Node's native type stripping.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # typecheck + build + smoke (built artifacts) + every test suite
+      - run: pnpm verify
+
+      - name: Upload the built bundles on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-lib
+          path: lib/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -24,6 +24,7 @@ import type { SessionBillingStats, PriceTable, PriceFileStatus, CalendarStatus, 
 import { BILLING_ENTRY_ID, RECENT_TURNS_CAP } from '../shared.ts'
 import { foldBilling, foldEvent, foldBillingBounded, boundTurns, EMPTY_STATS } from './session-stats.ts'
 import type { BillingFoldState } from './session-stats.ts'
+import { dropNonFiniteRows } from './price.ts'
 import { subagentsForSession, setSubagentTableSource } from './subagent-stats.ts'
 import { DEFAULT_TABLE, withProviderDefaults } from './default-prices.ts'
 import { loadPriceFile, mergeTables, resolvePriceFile } from './price-file.ts'
@@ -198,6 +199,9 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
   // only when the outcome CHANGES, so a file that is simply absent (the common
   // case) never spams the log and a broken one is reported once per state.
   let priceFileState: { log: string } | undefined
+  // Which rows the finite-rate guard dropped, so a table that stays broken
+  // logs once instead of on every refresh/re-mount.
+  let nonFiniteState: string | undefined
   let priceFileStatus: PriceFileStatus = {
     path: resolvePriceFile(config.get().priceFile), present: false, rows: 0, overridden: 0, errors: [],
   }
@@ -271,6 +275,21 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
     const path = resolvePriceFile(entry.priceFile)
     const report = loadPriceFile(path)
 
+    // The profile-patch layer bypasses the file loader entirely, so this is
+    // the only place a non-finite rate can still be caught before the fold.
+    const guard = (value: PriceTable): PriceTable => {
+      const { table: kept, dropped } = dropNonFiniteRows(value)
+      const log = dropped.join('|')
+      if (log !== (nonFiniteState ?? '')) {
+        for (const row of dropped) {
+          ctx.logger.error(`billing: dropped price row ${row} — a resolved rate is not a finite number, and a non-finite cost would throw inside the host's projection`
+            + ' (the profile-patch layer is never validated by the price-file loader)')
+        }
+        nonFiniteState = log === '' ? undefined : log
+      }
+      return kept
+    }
+
     // A file that is absent (the normal case) or unusable costs no more than a
     // failed stat: the settings descriptor is only built when there is a table
     // to layer, so the common path stays as cheap as it was.
@@ -282,7 +301,7 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
         for (const note of report.warnings) ctx.logger.warn(`billing: price file — ${note}`)
         priceFileState = { log }
       }
-      const frozenEntry = freezeTable(entry)
+      const frozenEntry = freezeTable(guard(entry))
       calendarStatus = describeCalendars(frozenEntry)
       return frozenEntry
     }
@@ -290,17 +309,22 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
     // Layer 1 = what the profile patch (`base`) and the settings page (`user`)
     // state themselves. `describe()` is the supported window onto those layers:
     // the resolved config cannot tell a user's row from a shipped default,
-    // because the schema fills in the defaults.
+    // because the schema fills in the defaults. When no descriptor exists at
+    // all, that window is closed: `explicit` is empty, so EVERY file row wins
+    // over whatever was saved — say so instead of silently outranking it.
     const descriptor = ctx.settings.describe().find(row => row.ns === BILLING_ENTRY_ID)
     const explicit = explicitLayers([descriptor?.base, descriptor?.user])
     const overridden = report.table.models.filter(row => explicit.rows.has(modelRowKey(row))).length
     priceFileStatus = { path, present: true, rows: report.rows, overridden, errors: [] }
 
-    const log = `ok:${path}:${String(report.rows)}:${String(overridden)}`
+    const log = `ok:${path}:${String(report.rows)}:${String(overridden)}:${descriptor === undefined ? 'no-descriptor' : 'descriptor'}`
     if (priceFileState?.log !== log) {
       for (const note of report.warnings) ctx.logger.warn(`billing: price file — ${note}`)
       ctx.logger.info(`billing: price file ${path} supplies ${String(report.rows)} model row(s)`
         + (overridden > 0 ? `; ${String(overridden)} are overridden by explicit configuration` : ''))
+      if (descriptor === undefined) {
+        ctx.logger.warn(`billing: settings describe() reports no "${BILLING_ENTRY_ID}" entry — ${String(report.rows)} price-file row(s) are layered with no explicit-config comparison, so they win over any saved price`)
+      }
       priceFileState = { log }
     }
 
@@ -314,7 +338,7 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
     if (pinnedModels.length > 0 || Object.keys(pinnedProviders).length > 0) {
       table = mergeTables(table, { providers: pinnedProviders, models: pinnedModels })
     }
-    const frozen = freezeTable(table)
+    const frozen = freezeTable(guard(table))
     calendarStatus = describeCalendars(frozen)
     return frozen
   }
@@ -525,6 +549,14 @@ export function apply(ctx: HostContext, config: PriceTableConfig): void {
             writeError(res, new BillingRouteError('not-found', `unknown billing API method "${method}"`, 404))
         }
       } catch (error) {
+        // A BillingRouteError is an expected, self-describing outcome (bad
+        // payload, unknown session); anything else is a bug, and the client
+        // only sees a 500 body it may swallow. Log the unexpected ones loudly
+        // before the response leaves.
+        if (!(error instanceof BillingRouteError)) {
+          const detail = error instanceof Error ? error.stack ?? error.message : String(error)
+          ctx.logger.error(`billing: /billing/api/${method} failed — ${detail}`)
+        }
         writeError(res, error)
       }
     },
@@ -604,7 +636,10 @@ function refreshSession(
 }
 
 /** Return a session's FULL per-request consumption history (unbounded,
- *  ascending) for the detail panel, folding its live log on demand. */
+ *  ascending) for the detail panel, folding its live log on demand. The fold
+ *  appends into one mutable sink, so a long log is folded in linear time
+ *  instead of copying the growing `turns` array on every event; the sink is
+ *  snapshotted once here. */
 function turnsForSession(
   ctx: HostContext,
   payload: unknown,
@@ -614,7 +649,9 @@ function turnsForSession(
   if (session === undefined) {
     throw new BillingRouteError('not-found', 'unknown session', 404)
   }
-  return { ok: true, turns: foldBilling(session.snapshotEvents(), table).turns }
+  const turns: TurnCost[] = []
+  foldBilling(session.snapshotEvents(), table, { turnsSink: turns })
+  return { ok: true, turns: [...turns] }
 }
 
 export const name = 'billing'

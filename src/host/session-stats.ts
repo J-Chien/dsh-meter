@@ -29,8 +29,11 @@ export interface BillingFoldState {
   stats: SessionBillingStats
 }
 
-/** Clone a stats value so each request gets a fresh object (immutable fold). */
-function cloneStats(stats: SessionBillingStats): SessionBillingStats {
+/** Clone a stats value so each request gets a fresh object (immutable fold).
+ *  `turns` is passed in rather than copied here: the fold decides whether to
+ *  copy the growing array (default), skip it (totals-only folds), or append
+ *  into a caller-owned sink (the turns route). */
+function cloneStats(stats: SessionBillingStats, turns: TurnCost[]): SessionBillingStats {
   return {
     ...stats,
     peakModels: [...stats.peakModels],
@@ -38,7 +41,7 @@ function cloneStats(stats: SessionBillingStats): SessionBillingStats {
     byPeriod: Object.fromEntries(
       Object.entries(stats.byPeriod).map(([c, v]) => [c, { ...v }]),
     ),
-    turns: [...stats.turns],
+    turns,
     compactions: { ...stats.compactions, cost: { ...stats.compactions.cost } },
   }
 }
@@ -69,19 +72,48 @@ function peakKey(provider: string, model: string, effort: string | undefined): s
   return effort !== undefined ? `${provider}/${model}/${effort}` : `${provider}/${model}`
 }
 
-/** Fold one committed session event into billing state. Pure over the log. */
+/** How a fold treats the per-request `turns` rows. */
+export interface FoldOptions {
+  /**
+   * Collect `turns`. Default true (the projection frame and the detail route
+   * need them). `false` is the totals-only mode: the fold neither grows nor
+   * copies the array, so a full-log fold is linear instead of O(n²) in the
+   * request count — used by the subagent route, which folds whole child logs
+   * and only reads request/token/cost counters.
+   */
+  collectTurns?: boolean
+  /**
+   * Append per-request rows to THIS array instead of copying `turns` into
+   * every intermediate state. The fold mutates it; the caller owns it and
+   * snapshots it after the fold (`turnsForSession`). Implies `collectTurns`.
+   */
+  turnsSink?: TurnCost[]
+}
+
+/**
+ * Fold one committed session event into billing state. Pure over the log.
+ * @param options - see {@link FoldOptions}; omitted = the original behaviour.
+ */
 export function foldEvent(
   state: BillingFoldState,
   event: SessionEvent,
   table: PriceTable,
+  options?: FoldOptions,
 ): BillingFoldState {
+  const sink = options?.turnsSink
+  const collectTurns = sink !== undefined || options?.collectTurns !== false
+  // The sink keeps ONE array identity across every intermediate state (that is
+  // what makes accumulation linear); otherwise each clone gets its own copy so
+  // the returned states stay independent.
+  const nextTurns = (stats: SessionBillingStats): TurnCost[] =>
+    sink ?? (collectTurns ? [...stats.turns] : [])
   if (event.type === 'request/context') {
     // Context-window capacity, last-wins: a present contextWindow sets it, an
     // absent one clears it (model switched to an unknown-capacity route). A
     // value that did not change keeps the same state object (no no-op frame).
     const next = event.data.contextWindow
     if (next === state.stats.contextWindow) return state
-    const stats = cloneStats(state.stats)
+    const stats = cloneStats(state.stats, nextTurns(state.stats))
     if (next === undefined) delete stats.contextWindow
     else stats.contextWindow = next
     return withConfig(state.config, stats)
@@ -102,7 +134,7 @@ export function foldEvent(
     ) {
       return state
     }
-    const stats = cloneStats(state.stats)
+    const stats = cloneStats(state.stats, nextTurns(state.stats))
     stats.currentModel = {
       provider: config.provider,
       model: config.model,
@@ -133,7 +165,7 @@ export function foldEvent(
       { inputTokens: uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
     )
 
-    const stats = cloneStats(state.stats)
+    const stats = cloneStats(state.stats, nextTurns(state.stats))
     stats.uncachedInputTokens += uncachedInputTokens
     stats.cacheReadTokens += cacheReadTokens
     stats.cacheWriteTokens += cacheWriteTokens
@@ -161,23 +193,26 @@ export function foldEvent(
     // detail matches the totals; they keep the provider's currency so
     // turn-level aggregation groups them with the right bucket. Truncation
     // to RECENT_TURNS_CAP happens in the projection apply wrapper — the fold
-    // keeps full history for the turns route.
-    stats.turns.push({
-      turn: event.data.turn,
-      step: event.data.step,
-      time: event.time,
-      inputTokens: totalInputLength,
-      cacheReadTokens,
-      cacheWriteTokens,
-      outputTokens,
-      cacheHitRate: uncachedInputTokens + cacheReadTokens > 0
-        ? cacheReadTokens / (uncachedInputTokens + cacheReadTokens)
-        : 0,
-      cost: found ? cost : 0,
-      currency,
-      period,
-      priced: found,
-    })
+    // keeps full history for the turns route. Totals-only folds skip both the
+    // object and the array growth (see FoldOptions).
+    if (collectTurns) {
+      stats.turns.push({
+        turn: event.data.turn,
+        step: event.data.step,
+        time: event.time,
+        inputTokens: totalInputLength,
+        cacheReadTokens,
+        cacheWriteTokens,
+        outputTokens,
+        cacheHitRate: uncachedInputTokens + cacheReadTokens > 0
+          ? cacheReadTokens / (uncachedInputTokens + cacheReadTokens)
+          : 0,
+        cost: found ? cost : 0,
+        currency,
+        period,
+        priced: found,
+      })
+    }
 
     const totalInput = stats.uncachedInputTokens + stats.cacheReadTokens
     stats.cacheHitRate = totalInput > 0 ? stats.cacheReadTokens / totalInput : 0
@@ -192,7 +227,7 @@ export function foldEvent(
     // joins the session totals; its tokens stay OUT of the conversation
     // buckets (a one-shot re-read of the compacted range would wreck the
     // cache-hit-rate semantics) and are accumulated on compactions instead.
-    const stats = cloneStats(state.stats)
+    const stats = cloneStats(state.stats, nextTurns(state.stats))
     stats.compactions = {
       ...stats.compactions,
       count: stats.compactions.count + 1,
@@ -231,13 +266,15 @@ export function foldEvent(
   return state
 }
 
-/** Fold an entire event log from the empty state. */
+/** Fold an entire event log from the empty state.
+ *  @param options - see {@link FoldOptions}; omitted = the original behaviour. */
 export function foldBilling(
   events: readonly SessionEvent[],
   table: PriceTable,
+  options?: FoldOptions,
 ): SessionBillingStats {
   let state: BillingFoldState = { stats: EMPTY_STATS }
-  for (const event of events) state = foldEvent(state, event, table)
+  for (const event of events) state = foldEvent(state, event, table, options)
   return state.stats
 }
 
@@ -267,12 +304,14 @@ export function boundTurns(turns: readonly TurnCost[]): TurnCost[] {
 /** Fold the log and bound `turns` to the most recent RECENT_TURNS_CAP
  *  conversation TURNS (not requests) for the projection frame. The raw fold
  *  keeps full history (the turns route needs it); only the projection path
- *  truncates so every pushed frame stays bounded. */
+ *  truncates so every pushed frame stays bounded.
+ *  @param options - see {@link FoldOptions}; omitted = the original behaviour. */
 export function foldBillingBounded(
   events: readonly SessionEvent[],
   table: PriceTable,
+  options?: FoldOptions,
 ): SessionBillingStats {
-  const stats = foldBilling(events, table)
+  const stats = foldBilling(events, table, options)
   if (stats.turns.length <= RECENT_TURNS_CAP) return stats
   return {
     ...stats,

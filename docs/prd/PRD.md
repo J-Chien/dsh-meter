@@ -1,6 +1,6 @@
 # dsh-meter 产品需求文档（PRD）
 
-> 状态：**已实现（v0.3.18）** · 最近更新：见文末
+> 状态：**已实现（v0.3.32）** · 最近更新：见文末
 > 本文档沉淀**当前有效**的产品需求与决策，供后续迭代/评审使用。逐版本变更记录见 [CHANGELOG.md](CHANGELOG.md)（新版本条目追加在其最上方）；已归档的迭代设计稿在 [archive/](archive/)。
 
 ---
@@ -95,7 +95,7 @@ token 数值统一为**精确计数 + 千位分隔 + ` tok`** 单位（如 `110,
 - 当 `hasPeakConfig` 为真时，细线下方每币种两行：**空闲时段**、**高峰时段**
 
 卡片头部（标题行的图标按钮，hover/focus 卡片时显形，无 hover 设备常显）：
-- **刷新**（按最新价格重算当前会话）、**查看详情**（打开逐轮消耗面板）、**齿轮设置**按钮（打开设置面板并排队 locate；计费卡片挂载时消费——**展开卡片与对应 provider、滚动定位到该模型**——下方空间足够则模型显示在视口第一行，否则保持在底部，不强行留白。rc.7 无设置面板导航 API，无法直接选中「插件」页，需用户手动点开）
+- **刷新**（按最新价格重算当前会话）、**查看详情**（打开逐轮消耗面板）、**齿轮设置**按钮（打开设置面板并**直接跳到** 设置 →「内置插件」→「计费价格」卡片；定位请求排队，计费卡片挂载时消费——**展开卡片与对应 provider、滚动定位到该模型**——下方空间足够则模型显示在视口第一行，否则保持在底部，不强行留白。0.1.7-rc.1 起的 settings 面板暴露 store seat，导航走该 seat，不再需要用户手动点开「插件」页）
 
 - **配色按角色固定（v0.3.22）**：分两个语域，各自不串味。
   - **数据着色**（图里指代某个序列）——**蓝 = token 量**（上下文进度条、每轮新增柱、三个 prompt 侧桶；深一档 = 更贵）、**绿 = 生成的输出 token**、**琥珀 = 高峰时段序列**（高峰柱、高峰图例、接近上限的进度条、未登记价格）、**灰 = 中性**（费用柱=钱、空闲序列、空值）。
@@ -105,7 +105,7 @@ token 数值统一为**精确计数 + 千位分隔 + ` tok`** 单位（如 `110,
 
 ### FR-3 价格配置（设置页）
 
-- **入口**：设置面板「插件」配置页内的计费设置卡片（rc.7 原生 `settings.plugin.item` 槽位，按命名空间 `billing-pricing` 键控注册；卡片自持有全部 chrome——折叠头、保存栏、只读/不可用态）。
+- **入口**：设置面板「插件」配置页内，**本插件那一行里的**「计费价格配置」页（0.1.7-rc.1 起的原生 `settings.plugins.tab` 槽位，key 为插件行 id `billing`；卡片自持有全部 chrome——折叠头、保存栏、只读/不可用态）。
 - **按 provider 分组**：从 `ctx.llm.listProviders()` 读取已注册 provider 及其模型目录，分组折叠展开（**默认全部折叠**；折叠/展开控件为标题右侧的箭头图标按钮，整行可点击切换）；**无手动添加模型**。
 - **每 provider 币种**：CNY / USD，独立选择；单位说明随币种显示（`单位：¥/百万Tokens`）。
 - **每模型四价**：输入（缓存命中）、输入（缓存未命中）、缓存写入、输出，单位"元/百万 token"；输入框显示**自动补零到两位小数**（`10` → `10.00`），**超过两位小数按实际值显示**（`10.155` 不变）。
@@ -124,8 +124,8 @@ token 数值统一为**精确计数 + 千位分隔 + ` tok`** 单位（如 `110,
   - 高峰每段的区间用**区间记号**展示：`输入长度 [0, 32)`、`输出长度 [0, 0.2)`、`[0.2+)`——下限缺省 = 0、上限缺省 = `+`，无约束的维度不显示、全无约束的默认段显示「全部」。
   - 新增/删除分段时高峰窗口**同步增删**对应段，结构始终与空闲时段**完全一致**。
   - 不配任何高峰窗口 → 始终按空闲/默认价计。
-  - **DeepSeek 官方预设**：`deepseek-official` provider 设置区有「应用」按钮——把该 provider 每个模型的高峰窗口设为**仅工作日**（替换已有工作日窗口，保留周末/全天窗口），provider 时区置 `Asia/Shanghai`，价格保留用户配置；幂等可重放。
-- **保存**：经原生 `settingsScope` 按字段写入（`providers` / `models` 两个顶层字段，revision fencing；写入被宿主拒绝时静默重读，通过比对 user 层确认落盘），host `scope.watch` 触发投影重挂载、自动重算所有会话。
+  - **DeepSeek 官方预设**：`deepseek-official` / `deepseek-account` 两个 provider 设置区各有「应用」按钮——把该 provider 每个模型的高峰窗口置为官方那两段（`09:00–12:00` / `14:00–18:00`，取自 `DEEPSEEK_PEAK_WINDOWS`）、生效日收窄为**仅工作日**、provider 时区置 `Asia/Shanghai`，价格保留用户配置；幂等可重放。**它真的会补齐官方时段**，而不只是重写 `days`——否则按钮的文案会超出它实际做的事。
+- **保存**：经原生 configForms 绑定按字段写入（`providers` / `models` 两个顶层字段，revision fencing；写入被宿主拒绝时静默重读，通过比对 user 层确认落盘），host `scope.watch` 触发投影重挂载、自动重算所有会话。**只写用户真正改过的行**——未被编辑的模型行/字段不落进 user 层，因此内置默认表的升级修正与价格文件对未触碰的行继续生效；写入 `providers` 时保留编辑器未建模的字段（如 `calendar`）。
 - **从卡片定位**：悬浮卡片点齿轮打开设置面板时，若会话已知当前模型，locate 请求排队；计费卡片挂载（用户打开「插件」配置页）时消费——展开卡片与 provider 分组并滚动定位该模型行（`data-billing-model` 定位 + 视口自适应：下方空间足够则置顶，否则靠底显示）。
 - **未登记语义**：未填任何价格/时段/分段的新模型在保存时不写入（保持"未登记"）。
 - **验收**：分组正确、币种独立、四价可编辑、分段开关正确、默认价=第一段、多分段可增删且连续、区间布局不换行、高峰时段同步增减分段、高峰价格按索引对齐、预填正确、保存后全局重算。
@@ -314,14 +314,14 @@ interface TurnSummary extends TurnCost { requests: number }
 | 层 | 方案 |
 |---|---|
 | Host 计费 | `ctx.sessionProjections` 的 `billing` 投影单元，纯函数折叠会话日志 |
-| Host 价格配置 | `ctx.settings` 命名空间 `billing-pricing`（内置表为 base） |
-| Host API | fenced `/billing/api` 路由：`catalog`（读 `ctx.llm`，含模型能力）、`refresh`、`turns`（全量逐轮明细） |
+| Host 价格配置 | `ctx.settings` 命名空间 `billing`（插件行 id；内置表为 base） |
+| Host API | fenced `/billing/api` 路由：`catalog`（读 `ctx.llm`，含模型能力）、`refresh`、`turns`（全量逐轮明细）、`subagents`（子代理费用汇总） |
 | Client 展示 | `conversation.session.header.actions`（入口）+ 自建 hover/click popover + `useProjection('billing')` |
-| Client 设置 | 原生设置卡片：`settings.plugin.item`（key=`billing-pricing`）+ `ctx.settingsScope.bind` 读写价格表（原生 settings RPC，revision  fencing） |
+| Client 设置 | 原生 `settings.plugins.tab` 页（key = `billing`）+ `ctx.configForms.get('billing')` 读写价格表（原生 settings RPC，revision fencing） |
 | 构建 | tsc（lib/types）+ tsdown 双 bundle（lib/index.js host、lib/client.js 浏览器） |
 
 关键约束（重要）：
-- **设置走原生 settings RPC**：rc.6 及以前 settings RPC 有写死白名单（第三方命名空间不暴露），故自建 `/billing/api` 读写（仿 `dsh-better-sidebar`）；rc.7 起白名单移除、新增 `settingsScope` 绑定与 `settings.plugin.item` 卡片槽位，价格表读写已迁移到原生路径（保存→`scope.watch`→投影重挂载全会话重算→各端 document-updated 重播种，均为原生联动）。自建路由只保留 settings RPC 不覆盖的：`catalog`（活目录）、`turns`/`refresh`（现场折叠）。
+- **设置走原生 settings RPC**：0.1.6 及以前 settings RPC 有写死白名单（第三方命名空间不暴露），故自建 `/billing/api` 读写（仿 `dsh-better-sidebar`）；**0.1.7-rc.1 起**白名单移除、新增 `configForms` 绑定与 `settings.plugins.tab` 卡片槽位，价格表读写已迁移到原生路径（保存→`scope.watch`→投影重挂载全会话重算→各端 document-updated 重播种，均为原生联动）。`configForms` binder 经调用方 fiber 解析依赖，所以 cordis `inject` 需带 `slots`/`locale`/`configForms`。自建路由只保留 settings RPC 不覆盖的：`catalog`（活目录）、`turns`/`subagents`（现场折叠，含全量明细）。
 - **client bundle 纯平台模块**：只能 import 平台表内包，类型用 `import type` 擦除。
 - **host 无热重载**：host 改动需重启；client 改动 `pnpm dev:watch` 热更新。
 
@@ -340,8 +340,14 @@ interface TurnSummary extends TurnCost { requests: number }
 
 ## 9. 验收与测试
 
-- 纯逻辑测试：`tests/pure-check.ts`（`node tests/pure-check.ts` 直接跑，node ≥22.18 原生 type-stripping），覆盖计价、高峰/空闲、跨天窗口、分段取档（含边界）、高峰窗口自身分段、缓存写入独立计价、多币种、未登记、空 days=每天、**时区判定（同一时刻跨时区归属相反、缺省北京时区、非法时区退化）**、精度。
-- 构建：`pnpm typecheck && pnpm build`。
+- 纯逻辑测试（`node --disable-warning=ExperimentalWarning tests/<file>.ts` 直接跑，node ≥22.18 原生 type-stripping）：
+  - `tests/pure-check.ts`——计价、高峰/空闲、跨天窗口、分段取档（含边界）、高峰窗口自身分段、缓存写入独立计价、多币种、未登记、空 days=每天、节假日日历、**时区判定（同一时刻跨时区归属相反、缺省北京时区、非法时区退化）**、精度、CSRF 围栏、官方预设。
+  - `tests/price-file-check.ts`——价格文件契约：单位误用、重复行、非法时区、路径解析。
+  - `tests/settings-nav-check.ts`——齿轮导航（jsdom）：store seat 路径 + DOM 回退 + 占用/无目标/陌生 seat。
+  - `tests/host-regression-check.ts`——非有限价格拒收、tier 对齐拒收、带/不带逐轮收集的折叠等价、解析层非有限护栏。
+  - `tests/client-regression-check.ts`——保存行筛选、官方预设输出、响应形状校验、压缩增速切片。
+- 构建与产物：`pnpm typecheck && pnpm build`；`pnpm smoke` 跑**已构建产物**（host bundle 装载 + client bundle 经 module-loader 注册两个槽位）——它能抓到 tsc 与纯逻辑测试都看不到的问题：导出被摇掉、bundle 不再加载、槽位 id 变了。
+- **发布前跑 `pnpm verify`**（typecheck + build + smoke + 全部测试），CI 同样跑这一条。
 - 安装冒烟：`npx @deepseek-ai/dsh plugin --profile web add ./dsh-meter` 后 `npx @deepseek-ai/dsh web` 启动，验证入口/卡片/设置页/刷新/保存。
 - 回归重点：命名顺序、多币种、高峰多时段、分段多档、未登记显示、热更新。
 
@@ -349,7 +355,7 @@ interface TurnSummary extends TurnCost { requests: number }
 
 ## 10. 迭代记录与后续候选
 
-逐版本变更记录已拆分为独立文档：**[CHANGELOG.md](CHANGELOG.md)**（最新在前，v0.1 → v0.3.18）。
+逐版本变更记录已拆分为独立文档：**[CHANGELOG.md](CHANGELOG.md)**（最新在前，v0.1 → v0.3.32）。
 v0.3 迭代的原始设计与评审记录已归档至 [archive/PRD-v0.3-逐轮消耗与上下文占用.md](archive/PRD-v0.3-逐轮消耗与上下文占用.md)。
 
 ### 后续候选（未排期）
@@ -359,11 +365,11 @@ v0.3 迭代的原始设计与评审记录已归档至 [archive/PRD-v0.3-逐轮�
 - [ ] 费用趋势图（按天/按模型）
 - [ ] 更多币种与汇率换算
 - [ ] 模型按 reasoning effort 细分价格档
-- [ ] 设置面板内深链到具体插件卡片（齿轮 → 插件页 → 展开计费卡片）：rc.7 无导航 API（面板打开态/激活 tab 均为组件本地 state），当前齿轮只能打开面板 + 排队 locate（卡片挂载时消费）；待上游开放
+- [x] ~~设置面板内深链到具体插件卡片（齿轮 → 插件页 → 展开计费卡片）~~ —— **v0.3.25 已实现**（走 settings 面板暴露的 shell store seat，见 `src/client/settings-nav.ts`）；DOM 回退路径保留给没有该 seat 的老 shell
 - [ ] 终端/无头模式的费用输出
 - [ ] 费用导出（CSV/JSON）
 - [ ] 缓存存储（按时长计费，如每百万tokens/小时）建模——需引入会话时长维度，当前无法从日志推导
 
 ---
 
-*最近更新：v0.3.18 适配 deepseek-harness `0.1.0-rc.7`——设置迁移原生机制（`settings.plugin.item` 卡片 + `settingsScope` 读写，自建 settings 路由下线，见 [CHANGELOG.md](CHANGELOG.md)）。*
+*最近更新：v0.3.32 对齐 DSH `0.2.0-rc.2` 基线（devDependencies 与运行宿主同版）+ 一轮健壮性修复（非有限价格闸门、tier 对齐校验、路由路径折叠去二次方、设置保存只写改过的行、响应形状校验、官方预设补齐官方时段），见 [CHANGELOG.md](CHANGELOG.md)。*

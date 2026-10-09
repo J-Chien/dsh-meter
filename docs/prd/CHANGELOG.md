@@ -5,6 +5,30 @@
 
 ---
 
+### v0.3.32（健壮性修复批次 + 基线对齐 0.2.0-rc.2：非有限价格、tier 错位、路由折叠二次方、保存覆盖价格文件）
+
+一轮只读体检（七触点扫描 + 与本机 `0.2.0-rc.2` 运行时包逐文件对照）发现的问题集中修复。兼容性结论先记在这里：插件消费的 16 个 `@deepseek-ai/dsh-*` 从 `0.2.0-rc.1` → `0.2.0-rc.2` 的差异**全是增量**（`dsh-api-remotes` 多一个 remote re-export、`dsh-client-ui-conversation` 多 6 个 `ask.*` locale 键、`dsh-client-ui-primitives` 多 `MenuGroup` 导出、`dsh-llm` 的 `MessageSourceMap` 多一个成员），其余包逐文件相同；用宿主自带的 `evaluatePluginCompatibility` 实跑，本包 manifest 在 `0.2.0-rc.2` 上 **ACCEPTED**，在 `0.1.7-rc.1` / `1.0.0` 上按预期 **REJECTED**。
+
+- **非有限价格闸门**：`NaN > RATE_CEILING` 恒假，于是 `.nan` / `.inf` 价格能穿过单位粘贴护栏 → 折叠出 NaN 费用 → 投影 wire schema（要求非负整数）在宿主 `drive()` 的无 `try/catch` 路径上抛错（该路径是每个已提交事件的必经之路）。现在**四处**都判非有限：文件解析、单位换算、`priceTokens`、以及**解析后的价格表**（profile patch 那条不经过文件加载器的路径，坏行丢弃并记日志，绝不让 NaN 进折叠）。
+- **tier 对齐校验**：文档一直承诺 `periods[].tiers` 与行上 `tiers` 按下标对齐，但从未校验——错位会静默按平价整单计费。现在不一致即**整份拒收**（与其它拒收条件同一语义：宁可文件不生效，也不要"一部分价格来自文件"）。
+- **路由路径折叠去掉二次方**：`cloneStats` 每个计价事件都整份复制 `turns` 数组，投影有 50 轮上限尚可承受，但 `turns` / `refresh` / 子代理 `foldRow` 三条走**全量日志**的路径是 O(n²)（子代理那条最尖：每个子会话都要付一次全量 turn 数组的代价）。新增"不收集逐轮"的折叠模式供只需计数的路径使用，`turns` 路由改为末尾快照一次。数值结果与原来逐字段一致（测试锁住等价性）。
+- **设置页保存只写改过的行**：此前 `hasBase` 按"值非零"判断、`buildEditor` 又从**解析后**的表播种，于是按一次保存就把内置默认表与价格文件的每一行写进 user 层——host 侧这些行随即成为显式 layer 1，价格文件再也纠正不了任何已收录模型，**"Agent 写 `prices.yaml`"这条工作流被静默废掉**。现在只持久化用户真正编辑过的行；写 `providers` 时保留编辑器未建模的字段（如 `calendar`）。
+- **refresh 失败不再静默**：`doRefresh` 是 `try/finally` 且**没有 `catch`**，调用处 `void doRefresh()` → 未处理 rejection：按钮停转、数字保持陈旧、没有任何提示。现在捕获、保留原数字并就地提示。
+- **路由响应形状校验**：`call<T>` 只校验 `ok` / `value` 就 `as T`，宿主换个字段名就会在**渲染期**抛（`aggregateTurns(undefined)` 一类）。改为对 UI 真正解引用的字段做最小校验并抛既有的 `BillingApiError`。本包 peer 区间刻意放宽到整条 `0.x`，这道防线不是可选项。
+- **官方预设补齐官方时段**：`officialPeakPeriods` 只在"已有工作日窗口"时改写 `days` 就返回——一个 10:00–11:00 的工作日窗口会被原样留下（既不是 09:00–12:00 也不是 14:00–18:00），而按钮文案承诺的是官方那两段。现在它真的产出官方时段对。
+- **可观测性**：路由 `catch` 对非 `BillingRouteError` 的异常记 `ctx.logger.error`（原来真正的 bug 只表现为客户端可能吞掉的 500 body）；`describe()` 找不到 `billing` 命名空间却又有价格文件供行时记警告（那种情况下文件会静默压过用户已保存的价格）。
+- **死代码 / 小修**：`default-prices.ts` 里重复声明的 `DEEPSEEK_PEAK_WINDOWS` 改为从 `shared.ts` 导入（`shared.ts` 的注释一直声称单一事实源，CHANGELOG 也声称已收敛）；`estimateCompactionGrowth` 先切片再过滤（注释说"最近 10 轮"，原实现会越取越远）；`BillingTurnsPanel` 跨币种求和的 `totalCost`、`Math.max(...rows)` 展开无界数组、只写不读的 `rootRef`；`BillingAction` 未使用的 `formatCompactTok` 导入；`fence.ts` 不可达的 `'::1'` 分支（WHATWG URL 总是给 IPv6 加方括号）；两条无人引用的 locale 键。
+- **回归测试**：新增 `tests/host-regression-check.ts` 与 `tests/client-regression-check.ts` 并接入 `pnpm test`，分别锁住上面每一条修复（含"带/不带逐轮收集的折叠等价性"）。
+- **基线与发布机械**：devDependencies 的 17 个 `@deepseek-ai/dsh-*` 从 `0.2.0-rc.1` 提到 **`0.2.0-rc.2`**，与**运行中的宿主同版**（此前 typecheck 验证的是比运行时更旧的类型面）；`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 同步追加 `0.2.0-rc.2`。
+- **仓库卫生**：补 `LICENSE`（MIT）；`files` 白名单不再发布 `tests`、`tsconfig.tests.json` 与两个只供本仓开发用的脚本（其中图标预览脚本的输入在主仓库 checkout 里，对消费者必然是坏的）；补 `repository` / `engines` / `publishConfig` / `keywords` 等元数据；`build` 脚本改用 `require('node:fs')`（不再依赖 Node 新版本才有的 `fs` 全局）；`icon-preview.html`（112 KB 生成物、输入在本仓之外）脱离 git 跟踪并加入 `.gitignore`；删除改名前的残留 `dsh-billing-0.2.6.tgz`（npm 上 `dsh-billing` 是另一个作者的另一个插件，这个文件名有误导安装的风险）。
+- **CI**：新增 `.github/workflows/verify.yml`，push / PR 跑 `pnpm install --frozen-lockfile && pnpm verify`——此前**没有任何东西会跑 `smoke`**，而它是唯一能发现"bundle 不再加载 / 导出被摇掉 / 槽位 id 变了"的检查。
+- **文档**：README 的 settings 章节改回真实机制（`settings.plugins.tab` + `configForms`，入口 id `billing`），补上从未写进 README 的**节假日日历**特性，修正徽标几何（`12px/22px` 而非 28px/13px）与 z-index 阶梯（1300/1200/1100）、内置默认表覆盖的 provider、路由清单、测试树；README / PRD 里指向 `docs/prd`、`docs/postmortem` 的链接改为绝对 GitHub URL（那些文件不进 npm 包，相对链接在 npm 上必然 404）；`CONFIGURING.md` 自检端口从 19387 改为 `dsh web` 默认的 3080、示例行数 6 → 8、拒绝条件补上非有限价格与 tier 错位；PRD 的 `settings.plugin.item` / `billing-pricing` / `settingsScope` 表述与"齿轮不能直达计费卡片"的过时限制一并更正；CHANGELOG 补上**缺失的 v0.3.21 条目**（提交 `7b0abad` 存在但从未记录），并按它自己声明的"最新在前"重排 v0.1 / v0.2 历史段。
+- **npm 发布态提醒**：registry 上的 `dsh-meter` 仍停在 0.3.18（peer `^0.1.0-rc.7`），在 0.2.x 宿主上会被安装前校验**直接拒绝**；README 的安装章节已改为优先源码 / tarball，并给出 0.1.7 线的 pinned 安装方式。
+
+验证：`pnpm verify`（typecheck + build + smoke + 5 个测试套件）全绿。
+
+---
+
 ### v0.3.31（子代理状态点对齐官方 `StateDot` 语义：旋转环=运行中、实心绿点=已结束、中性点=历史冷会话）
 
 v0.3.30 的卡片「子代理」小节用自绘状态点（绿=运行中、空心=历史），与官方 `ui-subagent` 的 `StateDot` 语义恰好相反——官方语言里「绿」= 已结束。用户会按官方习惯读错状态，本版把卡片的状态语言换成官方的**同一个组件**。
@@ -160,6 +184,18 @@ DSH 桌面端升到 0.2.0-rc.1 后，内置的 17 个 `@deepseek-ai/dsh-*` 运�
 - **缓存命中口径统一（同日修订）**：逐轮明细表与卡片柱状 tooltip 原来各自 `Math.round(rate*100)`，会把 99.2% 显示成「100%」——与卡片刚改的「部分命中绝不显示 100%」自相矛盾。两处都改走同一个 `formatCacheHitPercent(cacheRead, prompt)`（分母同样剔掉缓存写入），无 prompt 输入时显示「–」。
 - **修复：卡片齿轮点开的是对话里的「本轮用量」（同日修订，P0）**：`openBillingSettings` 原来用「排除法」找设置入口——「是 `aria-haspopup=dialog` 且既不是本插件、又没有 `aria-label` 的那个按钮」。官方把消息行的「用量 111K tok」药丸做成同一个弹层触发器（有 `aria-haspopup`、**没有** `aria-label`）之后，这个规则命中了它，于是齿轮打开的是对话的 token 用量弹层，而不是插件设置。改为**按槽位取**：先 `[data-slot="sidebar.settings"]`（DSH 侧栏设置入口，与 better-sidebar 样式表用的是同一个锚点），兜底再找「不在 `[data-slot^="conversation."]` 子树内」的弹层触发器——对话里的那些药丸全在 conversation 子树内，因此不会再被误点。
 - **无行为变更**：投影形状、路由、价格口径、交互时序（hover 200ms / 离开 300ms / 点击固定）全不动；`pnpm typecheck` + `pnpm test` 全绿。
+
+---
+
+### v0.3.21（适配 deepseek-harness 0.1.5-rc.2：SessionPersistence 迁移 + 依赖升级）
+
+> **事后补记**（v0.3.32 时补齐）：提交 `7b0abad` 已发布该版本，但从未写进本文档。
+
+- **宿主侧唯一真实破坏性变更**：0.1.5-rc.1 起 `SessionPersistence` 改为 `SessionHandle` 寻址，`listSnapshots()` / `inspect()` 被移除。此前编译产物在这两个方法上抛 `TypeError`，又被 `try/catch` 吞掉 → **子代理计费静默降级**为只覆盖本进程 resident 的 session（表面无异常，数字偏小）。
+- `subagent-stats.ts`：新增 `readStoredEvents`（`open(id,'read',{signal})` → `handle.read()` → `finally close`）；`listSnapshots` → `list({signal})`、`inspect` → `readStoredEvents`（共 3 处）。
+- **依赖**：14 个 `@deepseek-ai/dsh-*` 从 `0.1.2-rc.1` 提到 `0.1.5-rc.2`（dev 精确 pin + peer `^0.1.5-rc.2`）；`schemastery ^3.18.2`；浏览器侧三个包（runtime / primitives / slots）保持原 pin，以对齐 GUI bundle 实际链接的版本。
+- `pure-check.ts`：fixtures 适配会话 V3 事件形状（`assistant/message` 必填 `stream`、`compaction/summary` 的 `CompactionId` / `SessionSeq` 形状、`SessionHeader.version=3`）。
+- repo 类型 + 测试 + 构建在 0.1.5-rc.2 全绿（对 0.1.2-rc.1 的编译覆盖在 `d0ae4c0` / `293d49e`，与旧 lock 自洽，可单点 checkout 重建）。
 
 ---
 
@@ -344,27 +380,27 @@ subagent 在 harness 中是**独立会话**（header `origin: 'subagent'` + `par
 - **工程**：版本号对齐到 0.2.5；`prepare` 改为完整构建（原在首次 install 时因 tsc 产物缺失必失败）；删冗余脚本；package.json 加 `files` 白名单；修 `tsconfig.json` 的 `ignoreDeprecations: "6.0"`（TS 5.9 下 typecheck 直接报错）。
 - **小修**：`tierLabel` 死分支删除、「全部」进 locales（新增 `settings.tier.all`）；价格/小时/长度输入在 unmount 时提交未失焦的草稿；`foldEvent` 在 header config 未变时返回原 state（不再推空帧）；移除 client 死注入 `remote`。
 
-### v0.2.1
-- **分段计费改为开关**：每个模型行标题右侧「分段计费」switch，开启后在基础价格下方显示分段编辑器（不再放在页面最底部）；关闭则清空分段。
-- **输入/输出长度区间改为横向布局**：同一行内输入区间与输出区间并排，降低卡片高度。
-- **0 即填 0**：下限默认显示 `0`（真实值），上限留空 = 不限（显示 `∞`），不再出现「不限～32K」这类歧义。
-- **高峰时段区间复用、价格独立**：`PeakPeriod.tiers` 只存各段高峰价格，按索引对齐模型基础分段区间；新增高峰窗口时按基础分段结构预填各段价格（区间边界不再重复编辑）。
-- **卡片底色区分**：模型行左侧加品牌色竖条 + 分层底色（group 用 bg-base、模型行用 layer-1、分段/高峰用 layer-2/3），提升辨识度。
-
-### v0.2.2（暗色模式 token 修复）
-- **修复悬浮卡片「当前模型」行 dark 下底色消失**：`.modelLine` 原来用 `interactive-bg-hover-solid`，其 dark 值（`neutral-bluish-800`）与卡片背景 `specific-menu`（=`bg-layer-3`）同色，导致底色不可见。
-- **统一修复卡片/设置页内 hover 反馈**：`.refresh`/`.settings`/`.removePeriod` hover 背景从 `interactive-bg-hover-solid` 改为 `interactive-bg-hover`（半透明，与官方 Menu 一致），避免 dark 下与所在表面同色。
-- **设置页层级对齐官方语义**：provider 分组改为透明 + `border-l2`（官方 rowCard 模式，不再用 `bg-base` 造成 dark 大黑坑）；模型行改 `bg-module-platform`（官方 editor 填充模块语义）；`.addPeriod:hover` 由改边框色改为半透明背景（边框 l1 比 l2 更淡，原 hover 反而变淡）。
-
-### v0.2.3（当前模型行背景调弱）
-- **「当前模型」行背景从 `interactive-bg-hover-accent` 改为 `markdown-tag`**：上一版用 accent（dark 下 24% 白叠加，Δ≈61）对纯信息展示过强，dark 下抢占视觉重点；`markdown-tag`（light=浅灰、dark=比卡片深一档，Δ≈10-12）是"标签信息块"语义，亮暗都柔和克制，不抢 token/费用数字的重点。
-
 ### v0.2.4（分段与默认价格统一为连续档）
 - **默认价格成为第一段**：开启分段开关后，默认价格行显示可编辑区间，成为 `tiers[0]`；「添加分段」就在默认价格行下方直接增加新区间行——分段与默认价格是连续的一整套档，不再是独立区块。
 - **分段字段复用默认命名**：每个分段用与默认价格完全一致的四个字段（输入命中/未命中、缓存写入、输出），去掉"分段输入/分段输出"等前缀命名；区间行紧凑单行，不换行、不挤压布局。
 - **新增/删除分段时高峰窗口同步增删**：`addTier`/`removeTier` 同步给每个高峰窗口增删对应段（区间一致、价格独立可编辑）；关闭开关时清空高峰窗口的分段数组。
 - **计价兜底语义**：`tierIndex` 把无区间约束的档（默认/全部）作为最后兜底——具体区间段优先匹配，无匹配时落到默认档价；peak 按索引对齐保持不变。
 - **保存**：开启时分段保存为 `tiers`（`tiers[0]` = 默认档区间 + 顶层默认价）；关闭时 `tiers` 清空，仅存顶层默认价。
+
+### v0.2.3（当前模型行背景调弱）
+- **「当前模型」行背景从 `interactive-bg-hover-accent` 改为 `markdown-tag`**：上一版用 accent（dark 下 24% 白叠加，Δ≈61）对纯信息展示过强，dark 下抢占视觉重点；`markdown-tag`（light=浅灰、dark=比卡片深一档，Δ≈10-12）是"标签信息块"语义，亮暗都柔和克制，不抢 token/费用数字的重点。
+
+### v0.2.2（暗色模式 token 修复）
+- **修复悬浮卡片「当前模型」行 dark 下底色消失**：`.modelLine` 原来用 `interactive-bg-hover-solid`，其 dark 值（`neutral-bluish-800`）与卡片背景 `specific-menu`（=`bg-layer-3`）同色，导致底色不可见。
+- **统一修复卡片/设置页内 hover 反馈**：`.refresh`/`.settings`/`.removePeriod` hover 背景从 `interactive-bg-hover-solid` 改为 `interactive-bg-hover`（半透明，与官方 Menu 一致），避免 dark 下与所在表面同色。
+- **设置页层级对齐官方语义**：provider 分组改为透明 + `border-l2`（官方 rowCard 模式，不再用 `bg-base` 造成 dark 大黑坑）；模型行改 `bg-module-platform`（官方 editor 填充模块语义）；`.addPeriod:hover` 由改边框色改为半透明背景（边框 l1 比 l2 更淡，原 hover 反而变淡）。
+
+### v0.2.1
+- **分段计费改为开关**：每个模型行标题右侧「分段计费」switch，开启后在基础价格下方显示分段编辑器（不再放在页面最底部）；关闭则清空分段。
+- **输入/输出长度区间改为横向布局**：同一行内输入区间与输出区间并排，降低卡片高度。
+- **0 即填 0**：下限默认显示 `0`（真实值），上限留空 = 不限（显示 `∞`），不再出现「不限～32K」这类歧义。
+- **高峰时段区间复用、价格独立**：`PeakPeriod.tiers` 只存各段高峰价格，按索引对齐模型基础分段区间；新增高峰窗口时按基础分段结构预填各段价格（区间边界不再重复编辑）。
+- **卡片底色区分**：模型行左侧加品牌色竖条 + 分层底色（group 用 bg-base、模型行用 layer-1、分段/高峰用 layer-2/3），提升辨识度。
 
 ### v0.2
 - **缓存写入独立计价**：`ModelPrice`/`PeakPeriod`/`PriceTier` 新增 `cacheWrite` 单价；折叠中 `cacheWriteTokens` 改按 `cacheWrite` 计（未配置缺省 0），不再按缓存命中价近似。命名统一为独立「缓存写入」（非「输入（缓存写入）」）。设置页基础价与每个高峰时段/分段增加「缓存写入」输入；统计卡片在会话存在缓存写入 token 时显示「缓存写入」行。
@@ -373,26 +409,26 @@ subagent 在 harness 中是**独立会话**（header `origin: 'subagent'` + `par
 - **默认表新增 zai**：按 bigmodel.cn 官方价写入 GLM-5.1/GLM-5-Turbo/GLM-4.5-Air（输入分段）与 GLM-4.7（输入+输出分段），GLM-5.2 平档；缓存写入为限时免费（0）。
 - host 投影 `stateVersion` 4 → 5（折叠语义变更，旧缓存失效重算）。
 
-### v0.1.1
-- 设置页 provider 分组**默认全部折叠**；折叠/展开控件从行首移到**标题右侧**的箭头图标按钮，移除「展开/折叠」文本按钮（整行仍可点击切换）。
-
-### v0.1.2
-- 悬浮卡片费用区三行标签（总费用/空闲时段/高峰时段）**左对齐**（去掉分栏缩进）；空闲/高峰拆分金额改用**灰色小字**，与时段标题一致，总费用行样式不变。
-- 会话头部新增**红色「高峰」标签**：会话用到配置了高峰窗口的模型且当前时刻处于高峰时显示（实心红底圆角代码块样式，每分钟重算）。
-
-### v0.1.3
-- 设置页高峰时段起止时间改为**时钟样式**显示（`9:00` / `22:00`，结束可为 `24:00`）。
-- 价格输入**自动补零到两位小数**（`10` → `10.00`），超过两位小数按实际值显示（`10.155` 不变）。
+### v0.1.5
+- 修复未定义 token：`--dsw-alias-fill-l1/l2` 在运行时不存在，头部标签底色与设置页所有填充背景改为**运行时确认存在的 token**（`bg-layer-1/2/3` 层级底色、`state-warn-tertiary` 琥珀底、`interactive-bg-hover-*` 悬浮底），「未登记价格」「空闲」标签底色可见。
+- 悬浮卡片标题下方新增**当前模型行**（`provider / model` + reasoning effort）。
+- 卡片齿轮设置改为**跳转并定位当前模型**：自动展开对应 provider 分组，滚动到该模型行（下方空间足够则置顶显示，否则靠底显示，不强行留白）。
 
 ### v0.1.4
 - 头部状态标签**弱饱和化**：高峰改浅红底红字（不再实心红）；新增**灰色「空闲」标签**（有高峰配置但当前不在高峰时显示）；无高峰配置不显示任何标签。
 - 「未登记价格」改为**琥珀色圆角标签**，与高峰/空闲标签统一成同一套 chip 样式。
 - 悬浮卡片「总费用」标签去掉币种符号 `(¥)`（金额右侧已带符号，避免重复）。
 
-### v0.1.5
-- 修复未定义 token：`--dsw-alias-fill-l1/l2` 在运行时不存在，头部标签底色与设置页所有填充背景改为**运行时确认存在的 token**（`bg-layer-1/2/3` 层级底色、`state-warn-tertiary` 琥珀底、`interactive-bg-hover-*` 悬浮底），「未登记价格」「空闲」标签底色可见。
-- 悬浮卡片标题下方新增**当前模型行**（`provider / model` + reasoning effort）。
-- 卡片齿轮设置改为**跳转并定位当前模型**：自动展开对应 provider 分组，滚动到该模型行（下方空间足够则置顶显示，否则靠底显示，不强行留白）。
+### v0.1.3
+- 设置页高峰时段起止时间改为**时钟样式**显示（`9:00` / `22:00`，结束可为 `24:00`）。
+- 价格输入**自动补零到两位小数**（`10` → `10.00`），超过两位小数按实际值显示（`10.155` 不变）。
+
+### v0.1.2
+- 悬浮卡片费用区三行标签（总费用/空闲时段/高峰时段）**左对齐**（去掉分栏缩进）；空闲/高峰拆分金额改用**灰色小字**，与时段标题一致，总费用行样式不变。
+- 会话头部新增**红色「高峰」标签**：会话用到配置了高峰窗口的模型且当前时刻处于高峰时显示（实心红底圆角代码块样式，每分钟重算）。
+
+### v0.1.1
+- 设置页 provider 分组**默认全部折叠**；折叠/展开控件从行首移到**标题右侧**的箭头图标按钮，移除「展开/折叠」文本按钮（整行仍可点击切换）。
 
 ### v0.1
 - 首个可用版本：会话头部常驻入口 + hover/点击卡片 + 计费设置页 + 高峰/空闲计价 + 多 provider/多币种 + 未登记价格 + 热更新开发循环。

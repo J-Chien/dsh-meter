@@ -20,7 +20,11 @@ function isLoopbackAuthority(authority: string): boolean {
   try {
     const url = new URL(`http://${authority}`)
     const hostname = url.hostname
-    if (hostname === 'localhost' || hostname === '[::1]' || hostname === '::1') return true
+    // WHATWG URL keeps IPv6 bracketed and normalizes the spelling, so the
+    // only reachable IPv6 loopback hostname here is the literal `[::1]`
+    // (an unbracketed `::1` is not a parseable authority at all). Do not add
+    // a bare `'::1'` comparison back: it can never match.
+    if (hostname === 'localhost' || hostname === '[::1]') return true
     const parts = hostname.split('.')
     return parts.length === 4
       && parts[0] === '127'

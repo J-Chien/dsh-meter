@@ -21,8 +21,15 @@ export interface ProviderCatalogRow {
 
 /** A route failure with the wire code. */
 export class BillingApiError extends Error {
-  constructor(readonly code: string, message: string) {
+  /** Wire/transport code: `network`, `http`, `invalid`, or a host-supplied one. */
+  readonly code: string
+
+  // A plain field, NOT a constructor parameter property: the repo's tests run
+  // through node's strip-only TypeScript loader, which rejects parameter
+  // properties outright (this file is imported by tests/client-regression-check.ts).
+  constructor(code: string, message: string) {
     super(message)
+    this.code = code
   }
 }
 
@@ -49,6 +56,52 @@ async function call<T>(method: string, payload: Record<string, unknown>): Promis
   return parsed.value as T
 }
 
+/**
+ * Whether a JSON value is a non-null, non-array object. Route payloads are
+ * cast by `call`, so every consumer below checks the shapes it dereferences.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Reject a payload missing a field the UI dereferences. Minimal ON PURPOSE:
+ * only shapes that crash a render (or feed `undefined` into the fold) are
+ * checked, never the whole schema — the host owns validating what it sends.
+ * Thrown as `BillingApiError`, so every existing load/fail state handles it
+ * exactly like an HTTP failure.
+ */
+function badPayload(method: string, detail: string): never {
+  throw new BillingApiError('invalid', `${method}: unexpected payload (${detail})`)
+}
+
+/** One /turns row: the numeric token/cost fields the fold and chart read. */
+function isTurnCost(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.turn === 'number'
+    && typeof value.step === 'number'
+    && typeof value.time === 'number'
+    && typeof value.inputTokens === 'number'
+    && typeof value.cacheReadTokens === 'number'
+    && typeof value.cacheWriteTokens === 'number'
+    && typeof value.outputTokens === 'number'
+    && typeof value.cost === 'number'
+    && typeof value.currency === 'string'
+    && typeof value.priced === 'boolean'
+}
+
+/** One /subagents child row: the fields its row view reads unguarded. */
+function isSubagentRow(value: unknown): boolean {
+  return isRecord(value) && typeof value.sessionId === 'string' && isRecord(value.cost)
+}
+
+/** One /catalog provider row: `buildEditor` maps over `models` directly. */
+function isCatalogProvider(value: unknown): boolean {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string'
+    && Array.isArray(value.models)
+    && value.models.every(model => isRecord(model) && typeof model.id === 'string')
+}
+
 /** Read the live provider catalog (registered providers + their models), plus
  *  the price file's and the holiday calendars' state (both undefined on an
  *  older host). */
@@ -57,13 +110,33 @@ export async function getProviderCatalog(): Promise<{
   priceFile?: PriceFileStatus
   calendar?: CalendarStatus
 }> {
-  return call<{ providers: ProviderCatalogRow[]; priceFile?: PriceFileStatus; calendar?: CalendarStatus }>('catalog', {})
+  const value = await call<{ providers?: unknown; priceFile?: unknown; calendar?: unknown }>('catalog', {})
+  if (!Array.isArray(value.providers) || !value.providers.every(isCatalogProvider)) {
+    badPayload('catalog', 'providers')
+  }
+  const priceFile = value.priceFile
+  // Only the fields the card reads once it decides to show the notice: a host
+  // that omits `present` simply has no notice, which is not a failure.
+  if (priceFile !== undefined && !(isRecord(priceFile)
+    && (!priceFile.present
+      || (typeof priceFile.path === 'string' && typeof priceFile.rows === 'number' && Array.isArray(priceFile.errors))))) {
+    badPayload('catalog', 'priceFile')
+  }
+  const calendar = value.calendar
+  if (calendar !== undefined && !(isRecord(calendar) && Array.isArray(calendar.names)
+    && Array.isArray(calendar.years) && Array.isArray(calendar.missing) && Array.isArray(calendar.invalid))) {
+    badPayload('catalog', 'calendar')
+  }
+  return value as { providers: ProviderCatalogRow[]; priceFile?: PriceFileStatus; calendar?: CalendarStatus }
 }
 
 /** Fetch a session's FULL per-request consumption history for the detail panel. */
 export async function getTurns(sessionId: string): Promise<TurnCost[]> {
-  const value = await call<{ turns: TurnCost[] }>('turns', { sessionId })
-  return value.turns
+  const value = await call<{ turns?: unknown }>('turns', { sessionId })
+  // `setTurns(value.turns)` feeds `aggregateTurns` and `turns.length` during
+  // render, so a renamed/dropped `turns` field must fail here, not there.
+  if (!Array.isArray(value.turns) || !value.turns.every(isTurnCost)) badPayload('turns', 'turns')
+  return value.turns as TurnCost[]
 }
 
 /**
@@ -71,8 +144,14 @@ export async function getTurns(sessionId: string): Promise<TurnCost[]> {
  * stats (the host folds the live log on demand).
  */
 export async function refreshSessionStats(sessionId: string): Promise<SessionBillingStats> {
-  const value = await call<{ stats: SessionBillingStats }>('refresh', { sessionId })
-  return value.stats
+  const value = await call<{ stats?: unknown }>('refresh', { sessionId })
+  const stats = value.stats
+  // These four are dereferenced unconditionally by the card's title figure,
+  // period split and context bar; anything else degrades to a blank/NaN cell.
+  if (!(isRecord(stats) && isRecord(stats.cost) && isRecord(stats.byPeriod) && Array.isArray(stats.turns))) {
+    badPayload('refresh', 'stats')
+  }
+  return stats as unknown as SessionBillingStats
 }
 
 /**
@@ -81,5 +160,12 @@ export async function refreshSessionStats(sessionId: string): Promise<SessionBil
  * re-folds fresh, so pollers simply call again.
  */
 export async function getSubagentsStats(sessionId: string): Promise<SubagentsBillingStats> {
-  return call<SubagentsBillingStats>('subagents', { sessionId })
+  const value = await call<unknown>('subagents', { sessionId })
+  // `totalCount` drives the section's visibility, `cost`/`children` are read
+  // with Object.keys/.map the moment it renders.
+  if (!(isRecord(value) && typeof value.totalCount === 'number' && isRecord(value.cost)
+    && Array.isArray(value.children) && value.children.every(isSubagentRow))) {
+    badPayload('subagents', 'stats')
+  }
+  return value as unknown as SubagentsBillingStats
 }

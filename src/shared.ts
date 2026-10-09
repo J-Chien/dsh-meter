@@ -646,16 +646,19 @@ function trimmedMean(values: readonly number[]): number | undefined {
  * excluded: its net grows with every request until it closes, which would
  * make the series jump at turn boundaries). Two windows are combined
  * CONSERVATIVELY — the trimmed mean over the whole completed history AND
- * over the last 10 completed turns; the SMALLER wins. Early sessions carry
- * one-off setup (system prompt, schema, first loads) that inflate the
- * all-time mean; recent light turns alone would over-promise. Taking the
- * minimum keeps the estimate grounded whichever regime the session is in.
- * Returns undefined with < 3 positive growths or no growth.
+ * over the last 10 completed turn TRANSITIONS; the SMALLER wins. Early
+ * sessions carry one-off setup (system prompt, schema, first loads) that
+ * inflate the all-time mean; recent light turns alone would over-promise.
+ * Taking the minimum keeps the estimate grounded whichever regime the session
+ * is in. Non-positive growths are dropped AFTER taking the window: the "last
+ * 10" must be the last 10 transitions the session actually made, not the last
+ * 10 positive ones (which could reach arbitrarily far back across a
+ * compaction that reset the level). Returns undefined with < 3 positive
+ * growths or no growth.
  */
 export function estimateCompactionGrowth(growths: readonly number[]): number | undefined {
-  const positive = growths.filter(g => g > 0)
-  const all = trimmedMean(positive)
-  const recent = trimmedMean(positive.slice(-10))
+  const all = trimmedMean(growths.filter(g => g > 0))
+  const recent = trimmedMean(growths.slice(-10).filter(g => g > 0))
   if (all === undefined) return recent
   if (recent === undefined) return all
   return Math.min(all, recent)

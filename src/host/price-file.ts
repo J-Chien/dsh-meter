@@ -178,8 +178,20 @@ export function resolvePriceFile(
   return isAbsolute(raw) ? raw : resolve(dshHome(env, home), raw)
 }
 
-/** Per-million rate → the config's 1e-5 integer units. */
+/**
+ * Per-million rate → the config's 1e-5 integer units.
+ *
+ * Refuses a non-finite rate outright: every validation gate in this module is
+ * comparator-based (`Math.min`/`max`, `> RATE_CEILING`), and EVERY comparison
+ * with NaN is false, so a YAML `.nan` would otherwise walk through the schema
+ * untouched. The caller turns this throw into a parse error — loading itself
+ * must never throw — but this is the last gate before a value becomes a table
+ * entry, so it fails loudly rather than minting a NaN price.
+ */
 function toUnits(rate: number): number {
+  if (!Number.isFinite(rate)) {
+    throw new RangeError(`price ${String(rate)} is not a finite number`)
+  }
   return Math.round(rate * PRICE_PRECISION)
 }
 
@@ -330,11 +342,42 @@ export function parsePriceFile(text: string, path = '<price file>'): PriceFileRe
       ...(row.periods ?? []).flatMap((period, index) => ratesOf(`periods[${index}]`, period as unknown as Record<string, unknown>)),
       ...(row.tiers ?? []).flatMap((tier, index) => ratesOf(`tiers[${index}]`, tier as unknown as Record<string, unknown>)),
     ]
-    const offender = rates.find(rate => rate.value > RATE_CEILING)
-    if (offender !== undefined) {
-      errors.push(`${label} looks like internal 1e-5 units, not per-MILLION tokens:`
-        + ` ${offender.label || 'input'} = ${String(offender.value)} exceeds ${String(RATE_CEILING)}/M`
-        + ' — write the number the provider\u2019s page shows (3 元/M is `3`)')
+    // Non-finite first: `.nan` is neither over the ceiling nor under zero, and
+    // reporting it as a unit mistake would send the writer looking at the
+    // wrong thing. Still one error per row.
+    const offender = rates.find(rate => !Number.isFinite(rate.value) || rate.value > RATE_CEILING)
+    if (offender === undefined) continue
+    if (!Number.isFinite(offender.value)) {
+      errors.push(`${label} has a non-finite price: ${offender.label || 'input'} = ${String(offender.value)}`
+        + ' — prices must be finite numbers (a YAML `.nan`/`.inf` is not a price)')
+      continue
+    }
+    errors.push(`${label} looks like internal 1e-5 units, not per-MILLION tokens:`
+      + ` ${offender.label || 'input'} = ${String(offender.value)} exceeds ${String(RATE_CEILING)}/M`
+      + ' — write the number the provider\u2019s page shows (3 元/M is `3`)')
+  }
+
+  // Tier RANGES live on the row; a period's `tiers` are the same LENGTH,
+  // aligned by index, carrying only prices (shared.ts). A mismatch bills the
+  // wrong number SILENTLY — a period with fewer tiers falls back to its flat
+  // price for the unmatched base ranges — so it is refused whole like every
+  // other writer mistake, at most one error per row.
+  for (const row of models) {
+    const label = `${row.provider}/${row.model}`
+    const rowTiers = (row.tiers ?? []).length
+    const periods = row.periods ?? []
+    for (let index = 0; index < periods.length; index += 1) {
+      const periodTiers = (periods[index]?.tiers ?? []).length
+      if (rowTiers === 0 && periodTiers > 0) {
+        errors.push(`${label} periods[${String(index)}] declares ${String(periodTiers)} tier(s) but the row declares none`
+          + ' — period tiers align BY INDEX with the row\u2019s `tiers`, so add matching row `tiers` (prices only) or drop them')
+        break
+      }
+      if (rowTiers > 0 && periodTiers !== rowTiers) {
+        errors.push(`${label} periods[${String(index)}] declares ${String(periodTiers)} tier(s) but the row declares ${String(rowTiers)}`
+          + ' — period tiers align BY INDEX with the row\u2019s `tiers`, so the counts must match')
+        break
+      }
     }
   }
 
@@ -368,18 +411,25 @@ export function parsePriceFile(text: string, path = '<price file>'): PriceFileRe
 
   if (errors.length > 0) return { path, present: true, rows: models.length, errors, warnings }
 
-  return {
-    path,
-    present: true,
-    rows: models.length,
-    errors,
-    warnings,
-    table: {
+  let table: PriceTable
+  try {
+    table = {
       providers,
       models: models.map(convertRow),
       ...(Object.keys(calendars).length === 0 ? {} : { calendars }),
-    },
+    }
+  } catch (error) {
+    // The unit conversion refuses a non-finite rate (see toUnits); the
+    // raw-unit guard above should already have caught one, so reaching here
+    // means a new rate field slipped past it. Still a parse error rather than
+    // a thrown load or a NaN table value.
+    return {
+      path, present: true, rows: models.length, warnings,
+      errors: [`${path}: cannot convert the price table to internal units — ${(error as Error).message}`],
+    }
   }
+
+  return { path, present: true, rows: models.length, errors, warnings, table }
 }
 
 /**

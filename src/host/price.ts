@@ -131,8 +131,13 @@ export function effectivePrice(
   return { ...fourPrices(row), period: 'off-peak', holiday, found: true }
 }
 
-/** Price one token bucket at a per-M price. All quantities are integers. */
+/** Price one token bucket at a per-M price. All quantities are integers.
+ *  A non-finite argument prices at 0: `tokens <= 0` / `perMTokens <= 0` do not
+ *  reject NaN (every comparison with NaN is false), and returning
+ *  `Math.floor(tokens * NaN / 1e6)` would put NaN into the totals, the wire
+ *  view and every rendered cost. */
 export function priceTokens(tokens: number, perMTokens: number): number {
+  if (!Number.isFinite(tokens) || !Number.isFinite(perMTokens)) return 0
   if (tokens <= 0 || perMTokens <= 0) return 0
   // tokens/1e6 * perMTokens/PRICE_PRECISION currency units → price units.
   return Math.floor((tokens * perMTokens) / 1_000_000)
@@ -141,7 +146,9 @@ export function priceTokens(tokens: number, perMTokens: number): number {
 /**
  * Price one request's usage at the model's effective price for its instant.
  * @returns { priceUnits, currency, period, found } — `currency` is the
- * provider's configured currency code ('' when the provider is unconfigured).
+ * provider's configured currency code, defaulting to 'CNY' when the provider
+ * has no entry in the table (priceRequest still prices the row; the fallback
+ * keeps the cost keyed under a real currency rather than '').
  */
 export function priceRequest(
   table: PriceTable,
@@ -170,4 +177,44 @@ export function priceRequest(
     + priceTokens(outputTokens, eff.output)
   const currency = table.providers[provider]?.currency ?? 'CNY'
   return { priceUnits, currency, period: eff.period, holiday: eff.holiday, found: eff.found }
+}
+
+/** Whether every resolved rate on one row is finite (period/tier rates too). */
+function hasOnlyFiniteRates(row: ModelPrice): boolean {
+  const finite = (value: number | undefined): boolean => value === undefined || Number.isFinite(value)
+  if (!finite(row.input) || !finite(row.output) || !finite(row.cacheInput) || !finite(row.cacheWrite)) return false
+  for (const period of row.periods ?? []) {
+    if (!finite(period.input) || !finite(period.output) || !finite(period.cacheInput) || !finite(period.cacheWrite)) return false
+    for (const tier of period.tiers ?? []) {
+      if (!finite(tier.input) || !finite(tier.output) || !finite(tier.cacheInput) || !finite(tier.cacheWrite)) return false
+    }
+  }
+  for (const tier of row.tiers ?? []) {
+    if (!finite(tier.input) || !finite(tier.output) || !finite(tier.cacheInput) || !finite(tier.cacheWrite)) return false
+  }
+  return true
+}
+
+/**
+ * Drop every row whose resolved rates are not all finite.
+ *
+ * The profile-patch layer reaches the resolved table without passing through
+ * the price-file loader, so a hand-written patch can carry a NaN/±Infinity
+ * where the schema's `min(0)` checks let it through (every comparison with
+ * NaN is false). Letting one become a table value would throw inside the
+ * host's per-committed-event projection loop — `wire.viewSchema.parse` runs
+ * there with no try/catch — taking every further frame of that session down.
+ * The row fails CLOSED here instead, at the last point before it is folded.
+ *
+ * @param table - the resolved table.
+ * @returns the table minus the bad rows, plus their `provider/model` labels.
+ */
+export function dropNonFiniteRows(table: PriceTable): { table: PriceTable; dropped: string[] } {
+  const dropped: string[] = []
+  const models = table.models.filter(row => {
+    if (hasOnlyFiniteRates(row)) return true
+    dropped.push(`${row.provider}/${row.model}`)
+    return false
+  })
+  return { table: dropped.length === 0 ? table : { ...table, models }, dropped }
 }

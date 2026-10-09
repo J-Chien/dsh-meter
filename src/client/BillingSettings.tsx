@@ -32,6 +32,7 @@ import { type BillingKey } from './locales.ts'
 import { isIanaTimezone, matchTimezones, timezoneChoices } from './timezones.ts'
 import { DEFAULT_TIMEZONE, DEEPSEEK_PROVIDER_IDS, WEEKDAY_DAYS, deepEqualJson } from '../shared.ts'
 import { officialPeakPeriods } from './preset.ts'
+import { modelRowKey, persistedModelRows, type ModelPersistInput } from './settings-merge.ts'
 import './theme.module.css'
 import css from './BillingSettings.module.css'
 
@@ -68,6 +69,12 @@ interface ModelEdit {
   tiers: PriceTier[]
   /** Whether tiered pricing is enabled (switch state); tiers persist only when on. */
   tierEnabled: boolean
+  /**
+   * Whether the user edited this row in the current draft session. Only edited
+   * rows are persisted, so an untouched built-in / price-file row is never
+   * pinned into the user layer (see settings-merge.ts for why that matters).
+   */
+  edited?: boolean
   /** Real model capability (context window / output cap), when resolved. */
   capability?: ModelCapability
 }
@@ -298,21 +305,26 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
 
   /**
    * Apply the official DeepSeek peak rule to the provider's models, and snap
-   * the provider's clock to Asia/Shanghai. Prices are never touched: the
-   * preset only reshapes "which hours/days count as peak", so existing peak
-   * prices carry over, and a model that has no weekday window yet is seeded
-   * with the official pair at its current off-peak rate.
+   * the provider's clock to Asia/Shanghai. Prices are never invented: the
+   * preset only reshapes "which hours/days count as peak", so a window whose
+   * hours already match an official one keeps its own peak prices, an official
+   * window with no match reuses the model's existing peak prices, and a model
+   * with no weekday window at all is seeded at its current off-peak rate.
    *
    * The transform is `officialPeakPeriods` (preset.ts) so it is testable
-   * without a DOM — the rule it enforces is that EVERY weekday window
-   * survives, since DeepSeek's official rule is two of them.
+   * without a DOM — the rule it enforces is DeepSeek's actual pair of windows.
+   * Only rows the transform really changed are marked edited, so pressing the
+   * button on an already-official row does not pin a price-file row.
    */
   const applyOfficialPreset = useCallback((providerId: string): void => {
     if (editor?.status !== 'ready') return
     patchProvider(providerId, p => ({
       ...p,
       timezone: DEFAULT_TIMEZONE,
-      models: p.models.map(m => ({ ...m, periods: officialPeakPeriods(m.periods, m, m.tiers) })),
+      models: p.models.map(m => {
+        const periods = officialPeakPeriods(m.periods, m, m.tiers)
+        return deepEqualJson(m.periods, periods) ? m : { ...m, periods, edited: true }
+      }),
     }))
   }, [editor, patchProvider])
 
@@ -331,13 +343,26 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
     setSaving(true)
     setSaveError(undefined)
     try {
+      const scope = pricingScope()
+      // The raw user layer is the authority on what the user already made
+      // explicit: rows present here survive a save that touched other rows,
+      // and its provider entries carry fields the editor does not model
+      // (`calendar`). See settings-merge.ts for the row rule and why writing
+      // every seeded row back would pin the whole resolved table.
+      const userLayer = scope.getSnapshot().user as Partial<PriceTable> | undefined
       const providers: PriceTable['providers'] = {}
-      const models: ModelPrice[] = []
-      // provider/model keys the editor represents (catalog-covered,
-      // effort-less). The editor OWNS these rows: clearing one unregisters it.
-      const editorKeys = new Set<string>()
+      const drafts: ModelPersistInput[] = []
       for (const provider of editor.providers) {
+        // Carry the provider's unmodeled fields over from the user's own prior
+        // entry: rebuilding the provider from editor state alone deleted a
+        // hand-written `calendar` (docs/CONFIGURING.md's escape hatch) on ANY
+        // save. Read the USER layer, not the resolved table, so a calendar
+        // that came from the price file or the built-in defaults is never
+        // pinned as explicit and stays correctable by its real source.
+        const prior = userLayer?.providers?.[provider.id]
+        const { currency: _currency, currencySymbol: _symbol, timezone: _timezone, ...unmodeled } = prior ?? {}
         providers[provider.id] = {
+          ...unmodeled,
           currency: provider.currency,
           currencySymbol: provider.currencySymbol,
           // Persist a non-empty timezone; empty = engine default (Asia/Shanghai).
@@ -346,7 +371,6 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
             : {}),
         }
         for (const m of provider.models) {
-          editorKeys.add(`${m.provider}/${m.model}`)
           // Register a model only when it carries a price, a peak window, or a
           // price tier; untouched catalog models stay unregistered (→ 未登记价格).
           const hasBase = m.input !== 0 || m.output !== 0 || m.cacheInput !== 0 || m.cacheWrite !== 0
@@ -363,36 +387,32 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
           } else {
             saveTiers = []
           }
-          if (hasBase || m.periods.length > 0 || saveTiers.length > 0) {
-            models.push({
-              provider: m.provider,
-              model: m.model,
-              input: m.input,
-              output: m.output,
-              cacheInput: m.cacheInput,
-              ...(m.cacheWrite !== 0 ? { cacheWrite: m.cacheWrite } : {}),
-              periods: m.periods.map(clonePeriod),
-              ...(saveTiers.length > 0 ? { tiers: saveTiers } : {}),
-            })
-          }
+          const registerable = hasBase || m.periods.length > 0 || saveTiers.length > 0
+          drafts.push({
+            key: modelRowKey({ provider: m.provider, model: m.model }),
+            edited: m.edited === true,
+            row: registerable
+              ? {
+                provider: m.provider,
+                model: m.model,
+                input: m.input,
+                output: m.output,
+                cacheInput: m.cacheInput,
+                ...(m.cacheWrite !== 0 ? { cacheWrite: m.cacheWrite } : {}),
+                periods: m.periods.map(clonePeriod),
+                ...(saveTiers.length > 0 ? { tiers: saveTiers } : {}),
+              }
+              : undefined,
+          })
         }
       }
-      // Merge back rows the editor cannot represent — models absent from the
-      // live catalog (provider unlisted/offline) and reasoningEffort-keyed
-      // rows. Without this, one save would silently delete them. Read the
-      // LIVE accepted table from the scope (kept current by the binding) —
-      // same role as the old settings.get re-read.
-      const scope = pricingScope()
-      const latest = scope.getSnapshot().value
-      if (latest !== undefined) {
-        for (const row of latest.models) {
-          if (row.reasoningEffort !== undefined || !editorKeys.has(`${row.provider}/${row.model}`)) {
-            models.push(row)
-          }
-        }
-        for (const [id, currency] of Object.entries(latest.providers)) {
-          if (!(id in providers) && models.some(m => m.provider === id)) providers[id] = currency
-        }
+      // Only edited rows (plus the user layer's own rows) reach the user layer:
+      // a save no longer pins every built-in / price-file row as explicit.
+      const models = persistedModelRows(drafts, userLayer?.models ?? [])
+      // Provider entries for providers the editor cannot show (off-catalog)
+      // whose rows survived above.
+      for (const [id, entry] of Object.entries(userLayer?.providers ?? {})) {
+        if (!(id in providers) && models.some(m => m.provider === id)) providers[id] = entry
       }
       // Native write path: per-field mutate on the namespace section (the
       // table's two top-level fields). The host's settings watcher re-mounts
@@ -521,7 +541,9 @@ export function BillingSettingsCard({ t }: BillingSettingsCardProps) {
                   onModel={(modelKey, fn) => {
                     patchProvider(provider.id, p => ({
                       ...p,
-                      models: p.models.map(m => (m.model === modelKey ? fn(m) : m)),
+                      // Mark the row edited: only touched rows are persisted
+                      // (see settings-merge.ts). Every model edit routes here.
+                      models: p.models.map(m => (m.model === modelKey ? { ...fn(m), edited: true } : m)),
                     }))
                   }}
                 />

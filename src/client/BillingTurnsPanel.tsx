@@ -82,8 +82,17 @@ function TurnChart({ rows, dimension, t, dense = false }: {
   t: (key: BillingKey) => string
   dense?: boolean
 }) {
-  const maxCost = Math.max(...rows.map(r => r.cost), 1)
-  const maxTokens = Math.max(...rows.map(r => r.inputTokens + r.outputTokens), 1)
+  // A loop, not `Math.max(...rows.map(...))`: the `turns` route leaves the row
+  // count unbounded, and spreading a >~1e5-element array overflows the JS
+  // argument limit with a RangeError during render. NaN (a malformed row) also
+  // leaves the floor at 1 instead of poisoning the axis.
+  let maxCost = 1
+  let maxTokens = 1
+  for (const row of rows) {
+    if (row.cost > maxCost) maxCost = row.cost
+    const tokens = row.inputTokens + row.outputTokens
+    if (tokens > maxTokens) maxTokens = tokens
+  }
   const max = dimension === 'cost' ? maxCost : maxTokens
   const ticks = axisTicks(max)
   // Fixed-width bars, chronological left→right; the chart column scrolls
@@ -236,7 +245,6 @@ function RequestRow({ row, hasPeak, t }: {
 
 /** The portaled detail panel. */
 export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurnsPanelProps) {
-  const rootRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
   const [turns, setTurns] = useState<TurnCost[]>(() => stats.turns ?? [])
   const [loading, setLoading] = useState(false)
@@ -452,7 +460,7 @@ export function BillingTurnsPanel({ sessionId, stats, t, onClose }: BillingTurns
     document.body,
   )
 
-  return <div ref={rootRef}>{panel}</div>
+  return <>{panel}</>
 }
 
 /** A collapsible turn group in the "按请求" view: a header row with the turn
@@ -467,9 +475,9 @@ function TurnGroupRows({ group, open, hasPeak, t, onToggle }: {
   // Aggregate the whole group: a multi-currency turn produces one summary per
   // currency. Token buckets sum safely (they are currency-free); COST must
   // never mix currencies, so the header lists one amount per currency
-  // (`¥1.20 + $0.35`, same as the header badge) instead of a false total.
+  // (`¥1.20 + $0.35`, same as the header badge) instead of a false total — the
+  // numeric `cost` stays 0 and `costText` carries the display.
   const summary = aggregateTurns(group.requests)
-  const totalCost = summary.reduce((acc, s) => acc + s.cost, 0)
   const totalInput = summary.reduce((acc, s) => acc + s.inputTokens, 0)
   const totalRead = summary.reduce((acc, s) => acc + s.cacheReadTokens, 0)
   const totalWrite = summary.reduce((acc, s) => acc + s.cacheWriteTokens, 0)
@@ -486,7 +494,9 @@ function TurnGroupRows({ group, open, hasPeak, t, onToggle }: {
     cacheWriteTokens: totalWrite,
     outputTokens: totalOutput,
     cacheHitRate: hitRate,
-    cost: totalCost,
+    // Never a cross-currency numeric total (see the note above): the display
+    // comes from `costText` below, and TokenCells prefers it.
+    cost: 0,
     currency: last.currency,
     period: last.period,
     priced: group.requests.every(r => r.priced),

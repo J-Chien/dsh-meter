@@ -12,11 +12,11 @@ import {
   IconDataOutlineMedium, IconListPenOutlineMedium, IconRefreshOutlineMedium, IconSettingsOutlineMedium, StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, anyPeakActive, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, aggregateTurns, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
-import { formatCacheHitPercent, formatCompactTok, formatExactTok, formatPrice, formatTime, formatTokens } from './format.ts'
+import { COMPACT_TRIGGER_RATIO, CONTEXT_WARN_THRESHOLD, EMPTY_STATS, anyPeakActive, turnGrowthByTurn, turnGrowths, estimateCompactionEta, estimateCompactionGrowth, aggregateTurns, type PriceTable, type SessionBillingStats, type SubagentBillingRow, type SubagentsBillingStats, type TurnCost, type TurnSummary } from '../shared.ts'
+import { formatCacheHitPercent, formatExactTok, formatPrice, formatTime, formatTokens } from './format.ts'
 import { subagentDotState } from './subagent-dot.ts'
 import { refreshSessionStats, getSubagentsStats } from './billing-api.ts'
-import { usePricingTable } from './pricing-scope.ts'
+import { pricingScope, usePricingTable } from './pricing-scope.ts'
 import { openBillingSettings } from './settings-nav.ts'
 import type {} from './types.ts'
 import { type BillingKey } from './locales.ts'
@@ -38,9 +38,39 @@ export interface BillingActionInjected {
 export type BillingActionProps =
   PropsRuntime<'conversation.session.header.actions'> & BillingActionInjected
 
-/** Symbol for a currency code. */
+/**
+ * Symbol for a currency code. Prefers the symbol the price table stores for a
+ * provider billing in that code — what the settings page and the agent-writable
+ * price file write — and falls back to the shipped default. Before this, the
+ * stored `ProviderCurrency.currencySymbol` never reached the card, making it a
+ * second source of truth that only the settings page honoured.
+ *
+ * Reads the live scope directly rather than taking a hook so every call site
+ * (card, turns panel) agrees without threading the table through half a dozen
+ * nested components; each caller sits under a surface that already subscribes
+ * to that scope, so a table change repaints it.
+ */
 export function currencySymbol(code: string): string {
+  const table = livePricingTable()
+  if (table !== undefined) {
+    // First provider billing in this code wins. Several providers may share a
+    // code; their symbols should agree, and a deterministic pick is better
+    // than a per-render coin flip.
+    for (const provider of Object.values(table.providers)) {
+      if (provider.currency === code && provider.currencySymbol !== '') return provider.currencySymbol
+    }
+  }
   return code === 'USD' ? '$' : '¥'
+}
+
+/** The attached scope's current table, if any (undefined before attach or on a
+ *  remote browser). Never throws: a missing scope just means the fallback. */
+function livePricingTable(): PriceTable | undefined {
+  try {
+    return pricingScope().getSnapshot().value
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -52,6 +82,10 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   const projected = useProjection('billing')
   const [override, setOverride] = useState<SessionBillingStats | undefined>(undefined)
   const [refreshing, setRefreshing] = useState(false)
+  // Last refresh failure, shown inline in the card. A refresh that fails
+  // (403/500/network) must not look like a no-op: the button stops spinning
+  // either way, so without this the stale numbers silently stay.
+  const [refreshError, setRefreshError] = useState<string | undefined>(undefined)
   const [peakNow, setPeakNow] = useState(false)
   const [turnsOpen, setTurnsOpen] = useState(false)
   // Bumped by the refresh button so the subagent section (route-fetched, not
@@ -92,12 +126,17 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
   const doRefresh = useCallback(async (): Promise<void> => {
     if (refreshing) return
     setRefreshing(true)
+    setRefreshError(undefined)
     try {
       // The peak tag re-evaluates off the peakKey effect above when the fresh
       // stats land; the table itself stays live via the scope subscription.
       // The subagent section watches subagentsReload and refetches too.
       setSubagentsReload(key => key + 1)
       setOverride(await refreshSessionStats(String(sessionId)))
+    } catch (error) {
+      // Keep the previous stats on screen (stale is better than blank) and say
+      // so; the projection feed will supersede them on the next frame anyway.
+      setRefreshError(error instanceof Error ? error.message : String(error))
     } finally {
       setRefreshing(false)
     }
@@ -109,6 +148,7 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
 
   const card = useMemo(() => (
     <BillingCard sessionId={String(sessionId)} stats={stats} t={t} refreshing={refreshing}
+      refreshError={refreshError}
       subagentsReload={subagentsReload}
       onRefresh={() => void doRefresh()}
       onDetail={() => setTurnsOpen(true)}
@@ -120,7 +160,7 @@ export function BillingAction({ sessionId, useProjection, t }: BillingActionProp
         closeCardRef.current?.()
         openBillingSettings(stats.currentModel)
       }} />
-  ), [sessionId, stats, t, refreshing, subagentsReload, doRefresh])
+  ), [sessionId, stats, t, refreshing, refreshError, subagentsReload, doRefresh])
 
   return (
     <>
@@ -358,11 +398,13 @@ function BillingPopover({ renderTrigger, content, closeRef }: {
 /** The hover card body: the official panel frame (title row → 0.5px rule →
  *  label/value details grid) with the billing-only sections folded in below
  *  it, each separated by the same hairline. */
-function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefresh, onDetail, onSettings }: {
+function BillingCard({ sessionId, stats, t, refreshing, refreshError, subagentsReload, onRefresh, onDetail, onSettings }: {
   sessionId: string
   stats: SessionBillingStats
   t: (key: BillingKey) => string
   refreshing: boolean
+  /** Last manual-refresh failure, shown inline; stats above stay as they were. */
+  refreshError: string | undefined
   /** Bumped to force the subagent section's fetch (refresh button). */
   subagentsReload: number
   onRefresh: () => void
@@ -424,6 +466,14 @@ function BillingCard({ sessionId, stats, t, refreshing, subagentsReload, onRefre
       </div>
 
       <div className={css.titleRule} aria-hidden="true" />
+
+      {/* Manual-refresh failure: the numbers below are the PREVIOUS ones, so
+       *  say so instead of letting a failed refresh look like a no-op. */}
+      {refreshError !== undefined ? (
+        <div className={css.contextWarn} role="status" style={{ marginBottom: 8 }}>
+          {t('refresh.failed')}: {refreshError}
+        </div>
+      ) : null}
 
       <dl className={css.details}>
         {stats.currentModel !== undefined

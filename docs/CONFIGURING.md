@@ -79,14 +79,14 @@ models:
 
 - 一个请求的**总输入长度**（未缓存 + 缓存读取 + 缓存写入）与**输出长度**决定命中哪一档；`inputMin`/`outputMin` 含、`inputMax`/`outputMax` 不含，省略即无界。
 - 命中一档后，该请求的四个桶**整档**计价；一个都不命中则回落到行上的基准价（或当前 `periods` 的价格）。
-- `periods[].tiers` 与行上 `tiers` **按下标对齐**（范围取自行上那份，时段那份只带价格），长度不一致时行为不可预期，别这样写。
+- `periods[].tiers` 与行上 `tiers` **按下标对齐**（范围取自行上那份，时段那份只带价格）。**长度不一致会被拒收**：某个时段的 `tiers` 数量与行上不同，或时段声明了 `tiers` 而行上没有（后者会让整段高峰按平价计），都会整份报错——错位的价目不会静默算钱。
 
 ### 单位与上限保护
 
 - 文件里的数字一律是 **元 / 百万 tokens**（如果 `currency: USD` 就是美元/百万）。
 - 插件内部把价格存成 **1e-5 元 的整数**（1 元/M = `100000`）。那是实现细节，**不要写进文件**。
-- 任何一行的任何价格 > **100000** 会被判定为「抄了内部单位」，**整个文件被拒收**（不转换、不部分应用）。
-- 其它拒收条件：一行重复声明、`providers` 里的时区不是合法 IANA 名、`models` 为空、字段缺失/越界、YAML 语法错误、顶层出现 `id`/`name`/`config`（说明你贴的是 patch 条目而不是表本体）。
+- 任何一行的任何价格 > **100000** 会被判定为「抄了内部单位」，**整个文件被拒收**（不转换、不部分应用）。这条同时覆盖 **非有限数**（`.nan` / `.inf`）——`NaN > 100000` 为假，所以单独判一次：非有限价格也在拒收之列。价格必须是非负有限数。
+- 其它拒收条件：一行重复声明、`periods[].tiers` 与行上 `tiers` 数量不一致（见上）、`providers` 里的时区不是合法 IANA 名、`models` 为空、字段缺失/越界、YAML 语法错误、顶层出现 `id`/`name`/`config`（说明你贴的是 patch 条目而不是表本体）。
 
 **只要有任何一个错误，整个文件都会被丢弃**，插件回退到内置/显式配置，并打日志、在设置卡片上显示红字。这是刻意的：「一部分价格来自文件」比「文件没生效」更难排查。
 
@@ -149,8 +149,9 @@ calendars:
 1. 先确定它在哪条路由下：设置页每个分组的标题里带 `(id)`；或向本机 catalog 查询：
 
    ```sh
-   curl -sS http://127.0.0.1:19387/billing/api/catalog \
-     -H 'content-type: application/json' -H 'host: 127.0.0.1:19387' -d '{}'
+   # 端口换成你本机 dsh web 的端口（默认 3080）
+   curl -sS http://127.0.0.1:3080/billing/api/catalog \
+     -H 'content-type: application/json' -H 'host: 127.0.0.1:3080' -d '{}'
    ```
 
    返回的 `value.providers[].id` 与 `value.providers[].models[].id` 就是可用的 `provider` / `model` 写法（该路由只接受 loopback + JSON，见 `src/host/fence.ts`）。
@@ -176,7 +177,7 @@ node scripts/check-prices.mjs <文件> --at 2026-09-01T10:00:00+08:00   # 只看
 
 ```
 price file : docs/examples/prices.deepseek.yaml
-model rows : 6
+model rows : 8
 effective prices, 元 / million tokens
 deepseek-official/deepseek-flash      峰 2/8/0.04      闲 1/4/0.02      峰 2/8/0.04      闲 1/4/0.02
 deepseek-official/deepseek-v4-pro     峰 9/27/0.3      闲 4.5/13.5/0.15  峰 9/27/0.3      闲 4.5/13.5/0.15
@@ -193,7 +194,7 @@ deepseek-official/deepseek-v4-pro     峰 9/27/0.3      闲 4.5/13.5/0.15  峰 9
 逐行：
   - <provider>/<model>  空闲 <i>/<o>/<c> · 高峰 <i>/<o>/<c>（元/百万 tokens，工作日 09:00-12:00、14:00-18:00）
 生效：在计费卡片点一次「刷新」即可，不需要重启
-注意：<没定价的模型 / 被显式配置覆盖的行 / 未建模的节假日 等>
+注意：<没定价的模型 / 被显式配置覆盖的行 / 文件里的行会被你下次在设置页保存时保留 等>
 ```
 
 ---

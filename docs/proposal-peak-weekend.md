@@ -1,6 +1,10 @@
 # 高峰/低谷规则迭代：工作日 vs 周末 + 时区支持
 
 > 状态：**已实现**（v0.3.19）。对应 DeepSeek 2026-08-23 峰谷计费新规则。
+>
+> ⚠️ **本文是当时的提案，正文保留原样，其中两处已被后续版本超越**（实现细节以代码与 [CHANGELOG.md](prd/CHANGELOG.md) 为准）：
+> 1. §「匹配口径」写的是只匹配 `deepseek-official`；**v0.3.26 起扩展为 `deepseek-official` + `deepseek-account` 两条路由**（DeepSeek 自有 API 的 key 路由与登录账户路由，见 `src/shared.ts` 的 `DEEPSEEK_PROVIDER_IDS`）。
+> 2. 预设按钮只"改写 `days`"的写法会让既有的非官方时段窗口原样留下（10:00–11:00 这类）；**v0.3.32 起预设会真的产出官方时段对**（09:00–12:00 / 14:00–18:00，来自 `DEEPSEEK_PEAK_WINDOWS`）。
 
 ## 0. 需求一句话
 

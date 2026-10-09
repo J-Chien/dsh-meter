@@ -20,7 +20,7 @@
  * `check-prices.mjs`) instead of being assumed — see DEFAULT_CALENDARS below.
  * Source: api-docs.deepseek.com/zh-cn/quick_start/pricing (2026-09).
  */
-import { WEEKDAY_DAYS } from '../shared.ts'
+import { DEEPSEEK_PEAK_WINDOWS, WEEKDAY_DAYS } from '../shared.ts'
 import { PRICE_PRECISION } from './price.ts'
 import type { ModelPrice, PriceTable, ProviderCurrency } from '../shared.ts'
 
@@ -31,9 +31,6 @@ export function cnyPerMillion(value: number): number {
 
 /** One DeepSeek rate triple, CNY per M tokens: [input, output, cache-hit input]. */
 type DeepSeekRate = readonly [number, number, number]
-
-/** DeepSeek peak windows, Beijing time: Mon–Fri 09:00–12:00 and 14:00–18:00. */
-const DEEPSEEK_PEAK_WINDOWS: readonly (readonly [number, number])[] = [[9, 12], [14, 18]]
 
 /** Off-peak and peak rates for the Flash and Pro models. */
 const DEEPSEEK_FLASH: DeepSeekRate = [1, 4, 0.02]

@@ -73,7 +73,9 @@ function foldRow(node: {
   activity: SubagentBillingRow['activity']
   events: readonly SessionEvent[]
 }, table: PriceTable): SubagentBillingRow {
-  const stats = foldBilling(node.events, table)
+  // Counts/tokens/cost only: collecting `turns` would copy the growing array
+  // on every event (O(n²)) for a log this route deliberately folds whole.
+  const stats = foldBilling(node.events, table, { collectTurns: false })
   const label = readLabel(node.events)
   return {
     sessionId: node.id,
